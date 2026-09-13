@@ -1,34 +1,30 @@
 /* ============================================================================
- *  empty.c —— 循迹小车(最基础版)
+ *  empty.c —— 循迹小车(最基础版) + 串口调试
  * ----------------------------------------------------------------------------
- *  【怎么用】
- *      上电后车不动, 屏幕显示状态。
- *      KEY1 按一下 -> 开始循迹;  再按一下 -> 停止
- *      KEY2 按一下 -> 电机自检(两轮都按前进方向转 50%);  再按一下 -> 停
- *                    这个模式不经过循迹逻辑, 专门用来验证"电机和接线好不好"
+ *  【当前阶段: 先把 8 路灰度调通】
+ *      串口(UART2, TX=PB15, 115200, 8N1)每 100ms 打印一行:
+ *          S=00001000 E=+014 AD=111
+ *          S  : 8 路灰度的原始值, 从左到右。有黑线 = 1, 没有 = 0
+ *          E  : 由 S 算出来的线偏差(-100~+100)
+ *          AD : 通道选择脚 AD2/AD1/AD0 的电平(选完最后一路应该是 111)
  *
- *  【屏幕显示(调参全靠它)】
- *      LF:STOP       状态: STOP / RUN / TEST(电机自检)
- *      S:00000000    8 路灰度的【原始值】: 从左到右, 车压到黑线时对应位应该变 1
- *      E:  -12       线偏差: -100(线在最左) ~ 0(正中) ~ +100(线在最右)
- *      L:040 R:040   左右轮实际占空比(%)
- *      K1:Run K2:Test
+ *      怎么用:
+ *          不用按任何键, 把车拿在手上, 让传感器在"黑线 / 白底"之间来回移动,
+ *          看串口 S= 后面那 8 位有没有跟着变。
  *
- *  【怎么标定 —— 按顺序做】
- *      第1步 看 S: 那一行(不用按键, 上电就在刷)
- *              把车放到黑线上 / 拿开, 看 1 的位置有没有跟着变。
- *              - 一直全是 0, 变都不变  -> 传感器没工作/没接好/没供电, 查硬件
- *              - 压线时反而是 0        -> 极性反了, 把 line_follow.c 的
- *                                          LF_LINE_LEVEL 从 1 改成 0
- *              - 压线时对应的位变成 1  -> 正常, 进入第2步
- *      第2步 按 KEY1 开始循迹, 看车是"往线上掰"还是"越走越远"
- *              - 越偏越远 -> 把 line_follow.c 的 LF_STEER_SIGN 改成 -1
- *      第3步 速度/灵敏度: LF_BASE_DUTY(速度)、LF_KP(画龙就调小, 拐不过来就调大)
- *              参数都在 line_follow.c 顶部的"可调参数"区
+ *  【如果 S 一直不动, 按这个顺序隔离】
+ *      1) 看 AD= 是不是 111
+ *           - 不是 111(比如一直 000) -> 通道选择脚没接好/没驱动, 查 PB24/PA24/PA26
+ *      2) 把传感器的 OUT 线从 PA22 上拔下来, 然后手动把 PA22 短接到 3.3V 和 GND
+ *           - 短到 3.3V 时 S 变成 11111111, 短到 GND 变成 00000000
+ *             -> 说明单片机这侧(PA22 输入)是好的, 问题在传感器模块/供电/接线
+ *           - 短接也没反应 -> 问题在单片机这边的引脚配置
+ *      3) 传感器模块单独查: 供电(VCC/GND)、OUT 是否接到了 PA22、
+ *         模块上的指示灯会不会随黑白变化
  *
- *  【中断分配】
- *      main_timer(TIMA0, 50ms) -> key_tick() 扫键
- *      SysTick(1ms)            -> tick.c 累加毫秒时基
+ *  【按键】
+ *      KEY1 = 循迹 开/关        KEY2 = 电机自检(两轮 50%) 开/关
+ *      建议: 传感器调通之前先别按 KEY1, 免得车乱跑
  * ==========================================================================*/
 #include "ti_msp_dl_config.h"
 #include <stdint.h>
@@ -41,21 +37,21 @@
 #include "key.h"                /* key_init / key_getnum */
 #include "motor.h"              /* motor_init */
 #include "led.h"                /* led_on / led_off */
-#include "grayscale_sensor.h"   /* Grayscale_Sensor_Init */
+#include "grayscale_sensor.h"   /* Grayscale_Sensor_Init / GRAYSCALE_SENSOR_CHANNELS */
 #include "oled.h"               /* OLED_Init / OLED_ShowString / OLED_Refresh */
 
 /* ---- 循迹控制 ---- */
 #include "line_follow.h"
 
 /* ---------- 时间节拍 ---------- */
-#define STEP_MS     10U         /* 循迹控制周期: 每 10ms 跑一次 */
-#define DISP_MS     100U        /* 屏幕刷新周期: 每 100ms 一次 */
+#define STEP_MS     10U         /* 循迹控制周期 */
+#define DISP_MS     100U        /* 屏幕刷新周期 */
+#define UART_MS     100U        /* 串口打印周期 */
 
 static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关 */
 
 /* ---------------------------------------------------------------------------
  *  中断服务: main_timer(TIMA0, 50ms) 里扫键
- *  (按键的定时器配置/开中断/NVIC 都在 key_init() 里做完了)
  * -------------------------------------------------------------------------*/
 void main_timer_INST_IRQHandler(void)
 {
@@ -66,11 +62,62 @@ void main_timer_INST_IRQHandler(void)
 }
 
 /* ============================================================================
- *  屏幕显示相关的小工具
+ *  串口调试打印 (PC_uart = UART2, TX = PB15, 115200)
  * ==========================================================================*/
 
-/* 显示带符号的三位数(OLED_ShowNum 只能显示无符号数, 所以自己写)
- * 例如 -12 -> "- 12",  12 -> "+ 12" */
+static void pc_putc(char c)
+{
+    while (DL_UART_isBusy(PC_uart_INST)) { }    /* 等上一个字节发完 */
+    DL_UART_transmitData(PC_uart_INST, (uint8_t)c);
+}
+
+static void pc_puts(const char *s)
+{
+    while (*s != 0) { pc_putc(*s++); }
+}
+
+/* 打印一个带符号的数, 固定 4 个字符: +014 / -100 / +000 */
+static void pc_put_signed4(int16_t v)
+{
+    uint16_t a;
+    pc_putc((v < 0) ? '-' : '+');
+    a = (uint16_t)((v < 0) ? -v : v);
+    pc_putc((char)('0' + (a / 100) % 10));
+    pc_putc((char)('0' + (a / 10) % 10));
+    pc_putc((char)('0' + (a % 10)));
+}
+
+/* 打印一行传感器状态:  S=00001000 E=+014 AD=111 */
+static void pc_print_sensor(void)
+{
+    uint16_t raw[GRAYSCALE_SENSOR_CHANNELS];
+    uint8_t  i;
+
+    line_follow_get_raw(raw);
+
+    pc_puts("S=");
+    for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++) {
+        pc_putc((raw[i] != 0U) ? '1' : '0');    /* 1 = 读到(黑线), 0 = 没读到 */
+    }
+
+    pc_puts(" E=");
+    pc_put_signed4(line_follow_get_error());
+
+    /* 通道选择脚 AD2/AD1/AD0 的实际电平:
+     * 读完 8 路后最后一个选的是通道 7, 所以正常应该是 111。
+     * 如果这里一直不是 111, 说明"选通道"这一步没生效。 */
+    pc_puts(" AD=");
+    pc_putc(DL_GPIO_readPins(GrayS_AD2_PORT, GrayS_AD2_PIN) ? '1' : '0');
+    pc_putc(DL_GPIO_readPins(GrayS_AD1_PORT, GrayS_AD1_PIN) ? '1' : '0');
+    pc_putc(DL_GPIO_readPins(GrayS_AD0_PORT, GrayS_AD0_PIN) ? '1' : '0');
+
+    pc_puts("\r\n");
+}
+
+/* ============================================================================
+ *  屏幕显示
+ * ==========================================================================*/
+
 static void show_signed3(u8 x, u8 y, int16_t v, u8 size)
 {
     if (v < 0) {
@@ -82,8 +129,6 @@ static void show_signed3(u8 x, u8 y, int16_t v, u8 size)
     }
 }
 
-/* 显示 8 路灰度的原始值, 最左边那路显示在屏幕左边
- * 例如 8 路都读到 1 -> 屏幕显示 "11111111" */
 static void show_raw(u8 x, u8 y, const uint16_t *raw, u8 size)
 {
     u8 i;
@@ -93,13 +138,10 @@ static void show_raw(u8 x, u8 y, const uint16_t *raw, u8 size)
     }
 }
 
-/* 把整屏状态刷一遍
- * 注意: 每一行画的内容宽度都是固定的, 所以刷新时不会留下残余字符。 */
 static void show_status(void)
 {
     uint16_t raw[GRAYSCALE_SENSOR_CHANNELS];
 
-    /* ---- 第 1 行: 状态 ---- */
     if (s_test_mode != 0U) {
         OLED_ShowString(0, 0, (u8 *)"LF:TEST", 16);
     } else if (line_follow_is_running()) {
@@ -108,25 +150,21 @@ static void show_status(void)
         OLED_ShowString(0, 0, (u8 *)"LF:STOP", 16);
     }
 
-    /* ---- 第 2 行: 8 路灰度的原始值 ---- */
     line_follow_get_raw(raw);
     OLED_ShowString(0, 16, (u8 *)"S:", 12);
     show_raw(12, 16, raw, 12);
 
-    /* ---- 第 3 行: 线偏差 ---- */
     OLED_ShowString(0, 28, (u8 *)"E:", 12);
     show_signed3(12, 28, line_follow_get_error(), 12);
 
-    /* ---- 第 4 行: 左右轮占空比 ---- */
     OLED_ShowString(0, 40, (u8 *)"L:", 12);
     OLED_ShowNum(12, 40, line_follow_get_left_duty(), 3, 12);
     OLED_ShowString(36, 40, (u8 *)"R:", 12);
     OLED_ShowNum(48, 40, line_follow_get_right_duty(), 3, 12);
 
-    /* ---- 第 5 行: 操作提示 ---- */
     OLED_ShowString(0, 52, (u8 *)"K1:Run K2:Test", 12);
 
-    OLED_Refresh();     /* 改了显存必须刷新, 否则屏幕不会变 */
+    OLED_Refresh();
 }
 
 /* ============================================================================
@@ -136,6 +174,7 @@ int main(void)
 {
     uint32_t last_step_ms;
     uint32_t last_disp_ms;
+    uint32_t last_uart_ms;
 
     /* ======================= 1. 外设初始化 ======================= */
     SYSCFG_DL_init();
@@ -147,23 +186,20 @@ int main(void)
 
     line_follow_init();
 
-    /* 注意: 这里故意没有初始化 MPU6050:
-     *   1) 最基础版循迹只用灰度, 不需要陀螺仪
-     *   2) mpu6050.c 的 I2C 读没有超时保护, 传感器没接好会开机卡死
-     * 以后要用陀螺仪时再加: mpu6050_init(); mpu6050_zero_yaw();  */
+    /* 故意不初始化 MPU6050: 本阶段不用, 而且它的 I2C 读没有超时保护 */
 
     /* ======================= 2. 开机画面 ======================= */
     OLED_Clear();
-    OLED_ShowString(0,  0, (u8 *)"LINE FOLLOW",  16);
-    OLED_ShowString(0, 20, (u8 *)"basic version", 12);
-    OLED_ShowString(0, 36, (u8 *)"K1 start", 12);
+    OLED_ShowString(0,  0, (u8 *)"SENSOR DEBUG", 16);
+    OLED_ShowString(0, 20, (u8 *)"UART2 PB15",   12);
+    OLED_ShowString(0, 36, (u8 *)"115200 8N1",   12);
     OLED_Refresh();
     delay_ms(800);
 
-    /* ★ 关键: 进主循环前把屏幕擦干净!
-     *   开机画面的行位置和下面的状态行(16/28/40/52)对不齐,
-     *   不擦的话会留下一堆残余字符, 看起来就是"乱码"。 */
-    OLED_Clear();
+    OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
+
+    pc_puts("\r\n=== LINE SENSOR DEBUG ===\r\n");
+    pc_puts("S=8 channel raw (1=line), E=error, AD=channel pins\r\n");
 
     led_off(1);
     led_off(2);
@@ -172,39 +208,51 @@ int main(void)
 
     last_step_ms = tick_get_ms();
     last_disp_ms = last_step_ms;
+    last_uart_ms = last_step_ms;
 
     /* ======================= 3. 主循环 ======================= */
     while (1)
     {
         uint32_t now = tick_get_ms();
-        uint8_t  code = key_getnum();       /* 0=没按, 1=KEY1, 2=KEY2 */
+        uint8_t  code = key_getnum();
 
-        /* ---------------- KEY1: 开始 / 停止循迹 ---------------- */
+        /* ---------------- KEY1: 循迹 开/关 ---------------- */
         if (code == 1U)
         {
-            s_test_mode = 0U;               /* 退出自检模式 */
+            s_test_mode = 0U;
             if (line_follow_is_running()) {
                 line_follow_stop();
             } else {
                 line_follow_start();
             }
             show_status();
+            pc_puts("[KEY1] ");
+            pc_puts(line_follow_is_running() ? "follow ON\r\n" : "follow OFF\r\n");
         }
 
-        /* ---------------- KEY2: 电机自检(两轮都转 50%) ---------------- */
+        /* ---------------- KEY2: 电机自检 ---------------- */
         else if (code == 2U)
         {
-            line_follow_stop();             /* 先停循迹, 免得和自检抢电机 */
+            line_follow_stop();
             s_test_mode = (uint8_t)((s_test_mode == 0U) ? 1U : 0U);
             line_follow_test_wheels(s_test_mode);
             show_status();
+            pc_puts("[KEY2] ");
+            pc_puts(s_test_mode ? "motor TEST on\r\n" : "motor TEST off\r\n");
         }
 
         /* ---------------- 每 10ms: 循迹控制 ---------------- */
         if ((now - last_step_ms) >= STEP_MS)
         {
             last_step_ms = now;
-            line_follow_step();             /* 没在跑时内部直接 return, 可以无脑调 */
+            line_follow_step();
+        }
+
+        /* ---------------- 每 100ms: 串口打印传感器 ---------------- */
+        if ((now - last_uart_ms) >= UART_MS)
+        {
+            last_uart_ms = now;
+            pc_print_sensor();
         }
 
         /* ---------------- 每 100ms: 刷屏 ---------------- */
@@ -214,7 +262,6 @@ int main(void)
             show_status();
         }
 
-        /* ---------------- LED1: 亮 = 正在循迹 ---------------- */
         if (line_follow_is_running()) {
             led_on(1);
         } else {

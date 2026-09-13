@@ -105,13 +105,11 @@ GPIO2.associatedPins[5].polarity    = "RISE";
 GPIO2.associatedPins[5].pin.$assign = "PA7";
 
 GPIO3.$name                         = "led";
-GPIO3.associatedPins.create(3);
+GPIO3.associatedPins.create(2);
 GPIO3.associatedPins[0].$name       = "LED1";
 GPIO3.associatedPins[0].pin.$assign = "PB2";
 GPIO3.associatedPins[1].$name       = "LED2";
 GPIO3.associatedPins[1].pin.$assign = "PB3";
-GPIO3.associatedPins[2].$name       = "LED0";
-GPIO3.associatedPins[2].pin.$assign = "PB21";
 
 GPIO4.$name                              = "key";
 GPIO4.associatedPins.create(2);
@@ -250,13 +248,6 @@ PWM3.ccp1PinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric9";
 
 SPI1.$name                              = "OLED";
 SPI1.peripheral.$assign                 = "SPI1";
-/* ★ 只发模式(PICO = Peripheral In, Controller Out)。
- *   OLED 是单向写的, 只用 SCLK + MOSI, MISO 完全用不上。
- *   原来用默认的 PICO_POCI(收发都要), SysConfig 就必须给 MISO 分配一个引脚,
- *   而 SPI1 的 MISO 唯一能用的就是 PB21 —— 于是 PB21 被占住, LED 没法用。
- *   改成 PICO 之后【根本不需要 MISO 引脚】, PB21 就腾出来了。
- *   (见 SDK 的 spi/SPIMSPM0.syscfg.js 里 pinmuxRequirements 的 switch) */
-SPI1.direction                          = "PICO";
 SPI1.peripheral.sclkPin.$assign         = "PB9";
 SPI1.peripheral.mosiPin.$assign         = "PB8";
 SPI1.sclkPinConfig.direction            = scripting.forceWrite("OUTPUT");
@@ -268,7 +259,9 @@ SPI1.mosiPinConfig.hideOutputInversion  = scripting.forceWrite(false);
 SPI1.mosiPinConfig.onlyInternalResistor = scripting.forceWrite(false);
 SPI1.mosiPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
 SPI1.mosiPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric11";
-/* (改成 PICO 只发模式后, misoPinConfig 整个不存在了, 原来那三行必须删掉) */
+SPI1.misoPinConfig.onlyInternalResistor = scripting.forceWrite(false);
+SPI1.misoPinConfig.passedPeripheralType = scripting.forceWrite("Digital");
+SPI1.misoPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric12";
 SPI1.cs0PinConfig.direction             = scripting.forceWrite("OUTPUT");
 SPI1.cs0PinConfig.hideOutputInversion   = scripting.forceWrite(false);
 SPI1.cs0PinConfig.onlyInternalResistor  = scripting.forceWrite(false);
@@ -323,6 +316,6 @@ pinFunction4.peripheral.hfxOutPin.$suggestSolution = "PA6";
 Board.peripheral.$suggestSolution                  = "DEBUGSS";
 Board.peripheral.swclkPin.$suggestSolution         = "PA20";
 Board.peripheral.swdioPin.$suggestSolution         = "PA19";
-/* (PICO 模式没有 MISO 引脚了, 原来这行建议也一并删掉) */
+SPI1.peripheral.misoPin.$suggestSolution           = "PB21";
 SPI1.peripheral.cs0Pin.$suggestSolution            = "PA2";
 TIMER1.peripheral.$suggestSolution                 = "TIMA0";

@@ -33,8 +33,9 @@
  *      以后想用串口看数据, 把 DBG_UART 改回 1 就行。
  *
  *  【万一以后 S 又不动了, 按这个顺序隔离】
- *      1) 看 AD= 是不是 111
- *           - 不是 111(比如一直 000) -> 通道选择脚没接好/没驱动, 查 PB24/PA24/PA26
+ *      1) 查通道选择脚 AD0/AD1/AD2 (PB24 / PA24 / PA26) 的接线
+ *         (原来这里靠打印 AD= 的电平来判断, 但那个读数是假的, 已删除 ——
+ *          原因见 pc_print_sensor() 里的说明: MSPM0 输出脚读不回来)
  *      2) 把传感器的 OUT 线从 PA22 上拔下来, 然后手动把 PA22 短接到 3.3V 和 GND
  *           - 短到 3.3V 时 S 变成 11111111, 短到 GND 变成 00000000
  *             -> 说明单片机这侧(PA22 输入)是好的, 问题在传感器模块/供电/接线
@@ -189,10 +190,9 @@ static void pc_put_u3(uint8_t v)
     pc_putc((char)('0' + (v % 10U)));
 }
 
-/* 打印一行状态:  S=00011000 AD=111 E=-014 L=040 R=040
+/* 打印一行状态:  S=00011000 E=-014 L=040 R=040
  *
  *   S   : 8 路灰度原始值, 从左到右, 1 = 黑线
- *   AD  : 通道选择脚 AD2/AD1/AD0 的实际电平
  *   E   : 线偏差, 负 = 线在左边, 正 = 线在右边
  *   L/R : 左轮/右轮"实际输出"的占空比(%)
  *
@@ -215,13 +215,16 @@ static void pc_print_sensor(void)
         pc_putc((raw[i] != 0U) ? '1' : '0');    /* 1 = 读到(黑线), 0 = 没读到 */
     }
 
-    /* 通道选择脚 AD2/AD1/AD0 的实际电平:
-     * 读完 8 路后最后一个选的是通道 7, 所以正常应该是 111。
-     * 如果这里一直不是 111, 说明"选通道"这一步没生效。 */
-    pc_puts(" AD=");
-    pc_putc(DL_GPIO_readPins(GrayS_AD2_PORT, GrayS_AD2_PIN) ? '1' : '0');
-    pc_putc(DL_GPIO_readPins(GrayS_AD1_PORT, GrayS_AD1_PIN) ? '1' : '0');
-    pc_putc(DL_GPIO_readPins(GrayS_AD0_PORT, GrayS_AD0_PIN) ? '1' : '0');
+    /* ★ 原来这里会打印 AD2/AD1/AD0 的电平(想着"读完 8 路后应该是 111"),
+     *   用来判断通道选择有没有生效。但那个读数是【假的】, 已删除:
+     *
+     *   MSPM0 的 DL_GPIO_initDigitalOutput() 只写 PINCM 的 PC_CONNECTED + 功能号,
+     *   并【不】置 INENA_ENABLE 位 —— 也就是说引脚配成普通输出时,
+     *   输入缓冲是关掉的, DL_GPIO_readPins() 永远读回 0。
+     *   (对比 dl_gpio.h: DL_GPIO_initDigitalInput() 才带 INENA_ENABLE)
+     *
+     *   所以 AD0/AD1/AD2 虽然确实在往外驱动, 但读不回来, 打出来的 000
+     *   跟"有没有选通道"完全无关。判断通道选择是否生效, 只能靠 S= 的变化。 */
 
     pc_puts(" E=");
     pc_put_signed4(line_follow_get_error());
@@ -394,7 +397,7 @@ int main(void)
     OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
 
     DBG_MSG("\r\n=== LINE FOLLOW ===\r\n");
-    DBG_MSG("S=00011000 AD=111 E=-014 L=040 R=040\r\n");
+    DBG_MSG("S=00011000 E=-014 L=040 R=040\r\n");
     DBG_MSG("K1=follow on/off   K2=motor test\r\n");
 
 

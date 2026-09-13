@@ -13,11 +13,7 @@
  * 三个都在 GPIOB, 所以用的都是 led_PORT。 */
 void led_on(uint8_t id)
 {
-    if(id == 0)
-    {
-        DL_GPIO_setPins(led_PORT, led_LED0_PIN);
-    }
-    else if(id == 1)
+    if(id == 1)
     {
         DL_GPIO_setPins(led_PORT, led_LED1_PIN);
     }
@@ -29,11 +25,7 @@ void led_on(uint8_t id)
 
 void led_off(uint8_t id)
 {
-    if(id == 0)
-    {
-        DL_GPIO_clearPins(led_PORT, led_LED0_PIN);
-    }
-    else if(id == 1)
+    if(id == 1)
     {
         DL_GPIO_clearPins(led_PORT, led_LED1_PIN);
     }

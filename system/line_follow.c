@@ -56,12 +56,23 @@
  *   下面还有一条编译期检查, 配置超了会直接编译报错。 */
 #define LF_MAX_DUTY         20
 
-#define LF_BASE_DUTY        14      /* 直行基础速度。必须在死区之上, 否则车不走 */
-#define LF_LOST_DUTY        12      /* 丢线时的速度(降速找线)。
-                                       注意: 不能低于死区! 否则丢线时一侧轮子
+/* ★★ 基础速度: 必须【明显高于】电机启动死区, 否则会左右摆 ★★
+ *
+ * 踩过的坑: 把 LF_BASE_DUTY 调到 14 想让车慢一点, 结果左右摇摆反而更严重。
+ * 原因 —— 基础速度离死区太近时:
+ *      1) 两个轮子本身都在死区边上, 转速不稳
+ *      2) 一个很小的转向命令(比如 steer = ±2)就会把某一侧推到死区【以下】
+ *         -> 那个轮子【直接不转】-> 车猛地往一边窜
+ *      3) 窜过头之后误差反号, 于是另一侧不转 -> 再窜回来
+ *      结果就是来回摆。速度越低越严重, 这跟直觉是反的。
+ *
+ * 所以要留出余量: 下面的差速摆动(±几)不能让任何一侧掉到死区以下。
+ * 本车(带云台+相机)实测大约 16 以上才稳, 所以取 18。 */
+#define LF_BASE_DUTY        18      /* 直行基础速度 */
+#define LF_LOST_DUTY        16      /* 丢线时的速度(降速找线)。
+                                       同样不能低于死区! 否则丢线时一侧轮子
                                        直接停住, 车会原地打转, 比不减速更糟。 */
-#define LF_TEST_DUTY        20      /* 电机自检(KEY2)用的速度。
-                                       要保证一定能转动, 所以取到速度上限 */
+#define LF_TEST_DUTY        20      /* 电机自检(KEY2)用的速度 */
 
 /* ---------- 轮子映射 ---------- */
 /* 电机编号: 1 = A路(PB17/PB18), 2 = B路(PB19/PB23) */
@@ -170,16 +181,16 @@
  *
  *      LF_MAX_STEER >= LF_BASE_DUTY
  *
- * 代入数字看(基础速度 14):
- *      LF_MAX_STEER =  6 -> 慢轮 8,  快轮 20 -> 速度差 12   <- 转不过弯
- *      LF_MAX_STEER = 14 -> 慢轮 0,  快轮 20 -> 速度差 20   <- 正确
+ * 代入数字看(基础速度 18):
+ *      LF_MAX_STEER =  6 -> 慢轮 12, 快轮 20 -> 速度差 8    <- 转不过弯
+ *      LF_MAX_STEER = 18 -> 慢轮 0,  快轮 20 -> 速度差 20   <- 正确
  *
  * 为什么之前会冲过弯道: 慢的一侧最低只能降到 LF_BASE_DUTY - LF_MAX_STEER,
  * 只要它降不到 0, 速度差就上不去, 车就转不过来。
  *
  * 注意 LF_MAX_STEER 不需要大于 LF_BASE_DUTY —— 超出的部分会被 lf_set_wheel()
  * 的硬顶截掉, 白给。取相等正好。 */
-#define LF_MAX_STEER        14
+#define LF_MAX_STEER        18
 
 /* 编译期检查: 参数配错了直接编译报错, 不要等到跑车才发现。 */
 #if (LF_BASE_DUTY > LF_MAX_DUTY)
@@ -192,8 +203,38 @@
 #error "LF_MAX_STEER 必须 >= LF_BASE_DUTY: 否则慢的一侧降不到 0, 速度差上不去, 会冲过弯道"
 #endif
 
-/* ---------- 丢线保护 ---------- */
-#define LF_LOST_TIMEOUT_MS  500U    /* 丢线超过这么久就停车(防止车跑飞) */
+/* ============================================================================
+ *  弯道: 停车原地转向再前进
+ * ----------------------------------------------------------------------------
+ *  思路: 车又重又慢, 用"差速硬拐"过急弯本来就吃力(会冲出去)。
+ *        不如干脆一点 —— 到弯节点【停住】, 原地把车头【转正】, 再继续前进。
+ *
+ *  靠什么判断"到弯节点了": 线丢了。8 路一路都看不到黑线, 说明车已经冲过了
+ *  线的尽头/拐角, 这就是节点。
+ *
+ *  靠什么判断"转到位了": 转向过程中传感器又会扫到那条新线, 当它出现在
+ *  【中间附近】(|error| <= LF_PIVOT_OK) 时, 说明车头已经对准新方向, 停转。
+ *  这样不需要陀螺仪/编码器, 只用灰度就能闭环。
+ * ==========================================================================*/
+
+#define LF_PIVOT_TRIGGER_MS 80U     /* 连续丢线超过这么久 -> 判定到弯节点, 停车转向。
+                                       不能太小, 否则线上一个小缺口就会误触发;
+                                       不能太大, 否则会冲过节点太远。 */
+#define LF_PIVOT_DUTY       16      /* 原地转向时两个轮子的占空比(一正一反)。
+                                       要能克服静摩擦把车拧动。 */
+#define LF_PIVOT_OK         20      /* |error| <= 这个值就算"对准了", 结束转向。
+                                       相当于线落在中间 1~2 路以内。 */
+#define LF_PIVOT_TIMEOUT_MS 2500U   /* 转向最长持续这么久。一直找不到线就停车,
+                                       防止就地打转。 */
+
+/* 弯道参数的编译期检查。★ 注意必须放在这些宏【定义之后】——
+ * 放在前面的话宏还没定义, 会被当成 0, 检查就没意义了(这里踩过一次)。 */
+#if (LF_PIVOT_TRIGGER_MS >= LF_PIVOT_TIMEOUT_MS)
+#error "LF_PIVOT_TRIGGER_MS 必须小于 LF_PIVOT_TIMEOUT_MS"
+#endif
+#if (LF_PIVOT_DUTY > LF_MAX_DUTY)
+#error "LF_PIVOT_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
+#endif
 
 /* ---------- 控制周期 ---------- */
 #define LF_STEP_MS          10U     /* line_follow_step 的调用周期(ms) */
@@ -215,8 +256,10 @@ static uint16_t s_raw[GRAYSCALE_SENSOR_CHANNELS];  /* 最近一次灰度的原�
 static int16_t s_error;             /* 最近一次偏差 -100~+100 */
 static uint8_t s_left_duty;         /* 最近一次左轮占空比(调试用) */
 static uint8_t s_right_duty;        /* 最近一次右轮占空比(调试用) */
-static int8_t  s_last_dir;          /* 丢线时用来记住"上次往哪边拐" */
+static int8_t  s_last_dir;          /* 记住"上次往哪边拐", 丢线和原地转向都要用 */
 static uint16_t s_lost_ms;          /* 已经连续丢线多久(ms) */
+static uint8_t  s_pivoting;         /* 1 = 正在原地转向(弯道模式) */
+static uint16_t s_pivot_ms;         /* 已经原地转了多久(ms), 超时保护用 */
 
 /* ============================================================================
  *  内部函数
@@ -272,25 +315,44 @@ static int16_t lf_calc_error(uint8_t bits, uint8_t *on_line)
 }
 
 /* ---------------------------------------------------------------------------
- *  让一个轮子按"带符号的速度"转
+ *  让一个轮子转
  *      id      : 1 = A路, 2 = B路
  *      fwd_dir : 该轮"前进"对应的方向值(1 或 2)
- *      cmd     : 0~100 的占空比。<=0 就停下(最基础版本不允许倒转)
+ *      cmd     : 带符号的占空比
+ *                  > 0  前进, 大小 = 占空比
+ *                  < 0  后退(只有"原地转向"会用到)
+ *                  = 0  停
+ *
+ *  ★ 注意: 负数是【反转】, 不是停! 所以循迹的差速输出在传进来之前
+ *    必须先自己夹到 0 以上(见 line_follow_step 里的限幅), 否则大偏差时
+ *    慢的那一侧会突然倒转, 车会甩出去。
  * -------------------------------------------------------------------------*/
 static void lf_set_wheel(uint8_t id, uint8_t fwd_dir, int32_t cmd)
 {
-    if (cmd <= 0) {
+    uint8_t dir;
+
+    if (cmd == 0) {
         motor_set_direction(id, 0U);            /* 方向脚清零 = 停 */
         motor_set_duty(id, 0U);
         return;
+    }
+
+    if (cmd > 0) {
+        dir = fwd_dir;                          /* 前进 */
+    } else {
+        /* 后退。motor.c 里方向只有 1 / 2 两个值, 取"另一个"就是反方向。
+         * (A路: 1 = 正转, 2 = 反转; B路: 2 = 正转, 1 = 反转)
+         * 如果以后给某一路加了别的方向定义, 这里要跟着改。 */
+        dir = (uint8_t)((fwd_dir == 1U) ? 2U : 1U);
+        cmd = -cmd;
     }
 
     /* ★ 最高速度的硬顶。所有往电机发的值都从这里过, 所以改了这里,
      *   不管上面怎么算都不可能超速 —— 这是最后一道保险。 */
     if (cmd > LF_MAX_DUTY) { cmd = LF_MAX_DUTY; }
 
-    motor_set_direction(id, fwd_dir);           /* 前进方向 */
-    motor_set_duty(id, (uint16_t)cmd);          /* 占空比 */
+    motor_set_direction(id, dir);
+    motor_set_duty(id, (uint16_t)cmd);
 }
 
 /* ---------------------------------------------------------------------------
@@ -304,6 +366,27 @@ static void lf_stop_wheels(void)
     lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, 0);
     s_left_duty  = 0U;
     s_right_duty = 0U;
+}
+
+/* ---------------------------------------------------------------------------
+ *  原地转向: 两个轮子一正一反, 车绕自己中心转
+ *      dir > 0 : 往右转(左轮前进, 右轮后退)
+ *      dir < 0 : 往左转
+ * -------------------------------------------------------------------------*/
+static void lf_pivot(int8_t dir)
+{
+    int32_t d = (int32_t)LF_PIVOT_DUTY;
+
+    if (dir > 0) {
+        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,   d);    /* 左轮前进 */
+        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, -d);    /* 右轮后退 */
+    } else {
+        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  -d);    /* 左轮后退 */
+        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR,  d);    /* 右轮前进 */
+    }
+
+    s_left_duty  = (uint8_t)d;
+    s_right_duty = (uint8_t)d;
 }
 
 /* ============================================================================
@@ -325,6 +408,8 @@ void line_follow_init(void)
     s_right_duty = 0U;
     s_last_dir   = 0;
     s_lost_ms    = 0U;
+    s_pivoting   = 0U;
+    s_pivot_ms   = 0U;
 }
 
 void line_follow_start(void)
@@ -332,18 +417,26 @@ void line_follow_start(void)
     pid_reset(&s_pid);          /* 清掉上次的积分/微分残留, 不然起步会猛地一拐 */
     s_lost_ms  = 0U;
     s_last_dir = 0;
+    s_pivoting = 0U;
+    s_pivot_ms = 0U;
     s_running  = 1U;
 }
 
 void line_follow_stop(void)
 {
-    s_running = 0U;
+    s_running  = 0U;
+    s_pivoting = 0U;            /* 顺手退出弯道转向状态 */
     lf_stop_wheels();           /* 立刻把两个轮子关掉 */
 }
 
 uint8_t line_follow_is_running(void)
 {
     return s_running;
+}
+
+uint8_t line_follow_is_pivoting(void)
+{
+    return s_pivoting;
 }
 
 /* ---------------------------------------------------------------------------
@@ -371,6 +464,38 @@ void line_follow_step(void)
         return;
     }
 
+    /* ================================================================
+     *  状态 A: 正在原地转向(弯道模式)
+     * ============================================================== */
+    if (s_pivoting != 0U)
+    {
+        s_pivot_ms += LF_STEP_MS;
+
+        /* 超时保护: 转了这么久还没找到线, 说明已经跑出赛道了, 停车别乱转 */
+        if (s_pivot_ms >= LF_PIVOT_TIMEOUT_MS) {
+            line_follow_stop();
+            return;
+        }
+
+        /* 线重新出现在【中间附近】= 车头已经对准新方向 -> 停转, 回去循迹。
+         * 为什么要求"在中间": 转的过程中线会从一边扫到另一边, 如果一看到线
+         * 就停, 车头还是歪的。等它扫到中间, 才说明车头正对着新方向。 */
+        if ((on_line != 0U) && (error <= LF_PIVOT_OK) && (error >= -LF_PIVOT_OK)) {
+            pid_reset(&s_pid);      /* 清掉转向过程中残留的量, 免得接着猛拐一下 */
+            s_lost_ms  = 0U;
+            s_pivoting = 0U;
+            /* 这里【不 return】: 直接落下去按正常循迹走一拍, 衔接更顺 */
+        }
+        else {
+            lf_pivot(s_last_dir);   /* 还没对准, 继续原地转 */
+            return;
+        }
+    }
+
+    /* ================================================================
+     *  状态 B: 正常循迹
+     * ============================================================== */
+
     /* ---------------- 第 2 步: 算转向量 steer ---------------- */
     if (on_line != 0U) {
         /* 看到线了: 正常循迹 */
@@ -385,13 +510,20 @@ void line_follow_step(void)
         /* 丢线了: 一个通道都没看到黑线 */
         s_lost_ms += LF_STEP_MS;
 
-        if (s_lost_ms >= LF_LOST_TIMEOUT_MS) {
-            /* 丢太久 -> 停车, 免得车乱跑。可能是车冲出去了, 或者传感器没调好 */
-            line_follow_stop();
+        if (s_lost_ms >= LF_PIVOT_TRIGGER_MS) {
+            /* ★ 连续丢线够久了 -> 判定"到弯节点了":
+             *   先【停住】(别冲过节点), 再转到状态 A 去把车头拧正。
+             *   s_last_dir 是最后一次拐弯的方向, 也就是线消失的方向。
+             *   如果一个方向都没记下(从头到尾没拐过), 默认往右找。 */
+            if (s_last_dir == 0) { s_last_dir = +1; }
+            s_pivoting = 1U;
+            s_pivot_ms = 0U;
+            lf_stop_wheels();               /* 立刻停住, 不要冲过节点 */
             return;
         }
 
-        /* 短时间内: 记住上一次往哪边拐, 继续朝那边找线, 同时降低速度 */
+        /* 还没到判定时间: 先按上次的方向继续找, 同时降速。
+         * 这一段是为了让线上一个小缺口能直接开过去, 不误触发停车。 */
         base  = LF_LOST_DUTY;
         steer = (int32_t)s_last_dir * LF_MAX_STEER;
     }

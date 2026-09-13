@@ -46,18 +46,34 @@
  *      KEY1 = 循迹 开/关        KEY2 = 电机自检(两轮 50%) 开/关
  *      屏幕右下角一直显示 "K1:Run K2:Test" 提醒。
  *
+ *  【循迹怎么走】两个状态自动切换, 不用管:
+ *      LF:RUN   正常循迹(跟着线走, 差速修正)
+ *      LF:PIVOT ★ 到弯节点了: 线丢了 -> 先停住 -> 原地把车头拧正 -> 继续循迹
+ *      屏幕第一行会实时显示是哪个状态。
+ *      为什么这么做: 车重又慢, 靠差速硬拐急弯本来就吃力, 容易冲出去。
+ *      停车原地转向反而更可靠。判断"到弯了"靠丢线, 判断"转正了"靠传感器
+ *      重新看到线并且落在中间 —— 不需要陀螺仪或编码器。
+ *
  *  【速度/参数在哪改】
  *      全部在 system/line_follow.c 最上面那一块 "可调参数":
  *          LF_MAX_DUTY      ★ 最高速度硬顶(任何一轮都不许超过)  20
- *          LF_BASE_DUTY     直行基础速度                      14
- *          LF_LOST_DUTY     丢线找线速度                      12
+ *          LF_BASE_DUTY     直行基础速度                      18
+ *                           ★ 必须明显高于电机启动死区, 否则左右摆!
+ *                             速度调低反而摆得更厉害 = 这个原因
+ *          LF_LOST_DUTY     丢线找线速度                      16
  *          LF_TEST_DUTY     KEY2 自检速度                     20
- *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               14
+ *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               18
  *                           ★★ 必须 >= LF_BASE_DUTY, 理由见文件里的推导:
  *                             它决定"慢的一侧能降到多低", 降不到 0 就转不过弯
  *          LF_KP / LF_KD    转向 PID 的 P / D                 20 / 0
  *                           ★ D 必须是 0 或很小, 理由见文件里的推导
  *                           ★ KP 必须和 LF_MAX_STEER 配套改, 见文件里说明
+ *
+ *          --- 弯道: 停车原地转向再前进 ---
+ *          LF_PIVOT_TRIGGER_MS  连续丢线多久判定"到弯节点"     80
+ *          LF_PIVOT_DUTY        原地转向的占空比(一正一反)      16
+ *          LF_PIVOT_OK          |误差| 小于它就算"对准了"        20
+ *          LF_PIVOT_TIMEOUT_MS  转向超时(找不到线就停车)        2500
  *
  *      ★ 约束(违反了直接编译报错, 不会等跑车才发现):
  *          LF_BASE_DUTY <= LF_MAX_DUTY
@@ -251,12 +267,15 @@ static void show_status(void)
 {
     uint16_t raw[GRAYSCALE_SENSOR_CHANNELS];
 
+    /* 状态行: 一眼就能看出车现在在干什么 */
     if (s_test_mode != 0U) {
-        OLED_ShowString(0, 0, (u8 *)"LF:TEST", 16);
+        OLED_ShowString(0, 0, (u8 *)"LF:TEST ", 16);
+    } else if (line_follow_is_pivoting()) {
+        OLED_ShowString(0, 0, (u8 *)"LF:PIVOT", 16);   /* 弯道: 原地转向中 */
     } else if (line_follow_is_running()) {
-        OLED_ShowString(0, 0, (u8 *)"LF:RUN ", 16);
+        OLED_ShowString(0, 0, (u8 *)"LF:RUN  ", 16);
     } else {
-        OLED_ShowString(0, 0, (u8 *)"LF:STOP", 16);
+        OLED_ShowString(0, 0, (u8 *)"LF:STOP ", 16);
     }
 
     line_follow_get_raw(raw);

@@ -37,6 +37,10 @@ void line_follow_stop(void);
 /* 当前是否在跑: 1 = 在循迹, 0 = 停着 */
 uint8_t line_follow_is_running(void);
 
+/* 当前是否在"弯道原地转向"过程中: 1 = 正在原地转, 0 = 不在
+ * (屏幕上显示 LF:PIVOT 就是它) */
+uint8_t line_follow_is_pivoting(void);
+
 /* 控制步进: 建议每 10ms 调用一次(没在跑时内部直接返回, 调了也没关系) */
 void line_follow_step(void);
 

@@ -48,12 +48,18 @@
  *
  *  【速度/参数在哪改】
  *      全部在 system/line_follow.c 最上面那一块 "可调参数":
- *          LF_BASE_DUTY     直行基础速度(占空比 %)      默认 30
- *          LF_LOST_DUTY     丢线找线速度                默认 25
- *          LF_TEST_DUTY     KEY2 自检速度               默认 40
- *          LF_MAX_STEER     转向量上限(差速幅度)         默认 30
- *          LF_KP / LF_KD    转向 PID 的 P / D            默认 40 / 0
+ *          LF_MAX_DUTY      ★ 最高速度硬顶(任何一轮都不许超过)  20
+ *          LF_BASE_DUTY     直行基础速度                      14
+ *          LF_LOST_DUTY     丢线找线速度                      12
+ *          LF_TEST_DUTY     KEY2 自检速度                     20
+ *          LF_MAX_STEER     转向量上限(差速幅度)               6
+ *          LF_KP / LF_KD    转向 PID 的 P / D                 20 / 0
  *                           ★ D 必须是 0 或很小, 理由见文件里的推导
+ *                           ★ KP 必须和 LF_MAX_STEER 配套改, 见文件里说明
+ *
+ *      ★ 约束: LF_BASE_DUTY + LF_MAX_STEER <= LF_MAX_DUTY
+ *              LF_LOST_DUTY + LF_MAX_STEER <= LF_MAX_DUTY
+ *        违反了会直接编译报错(#error), 不会悄悄超速。
  *          LF_STEER_SIGN    转向极性 +1 / -1            默认 +1
  *          LF_LINE_LEVEL    灰度"压线"判定电平           默认 1
  *          LF_LEFT/RIGHT_FWD_DIR  两轮"前进"方向值       1 / 2

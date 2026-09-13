@@ -67,6 +67,7 @@
 | 灰度 | `hardware/grayscale_sensor.c` | 8 路, `Grayscale_Sensor_Read_All()` |
 | 陀螺仪 | `hardware/mpu6050.c` | 只用 Z 轴积分求航向, 必须固定周期 `mpu6050_update()` |
 | OLED | `hardware/oled.c` + `oledfont.h` | SH1106 SPI 驱动 |
+| **循迹** | `system/line_follow.c` | 灰度8路 -> 偏差 -> PID -> 左右轮差速(最基础版) |
 | 蜂鸣器 | `hardware/buzzer.c` | |
 
 ### 3.2 云台模块(保留, 当前未初始化)
@@ -166,6 +167,18 @@ GPIOA 和 GPIOB 是**同一个 NVIC 向量**(IRQ 1 = `GROUP1_IRQHandler`)。
 > `DL_Timer_initTimerMode()` 会读 `genIntermInt`/`counterVal`, 栈上随机值会把定时器配坏
 > (表现为中断永远不进)。
 
+### 5.4 MPU6050 驱动有"卡死"风险
+
+`hardware/mpu6050.c` 的 I2C 收发里, 等待标志位的循环**没有超时保护**:
+
+```c
+while (DL_I2C_isControllerRXFIFOEmpty(MPU6050_INST)) { }   /* 传感器不应答就死等 */
+```
+
+如果 MPU6050 没接好/没上电, **开机会卡在这里, 整个程序起不来**。
+所以当前循迹版本的主程序里**故意没有调用** `mpu6050_init()`。
+以后要用陀螺仪做航向纠偏时, 建议先给这些等待循环加上超时(比如计数 10 万次就返回错误)。
+
 ---
 
 ## 6. 构建
@@ -186,8 +199,12 @@ GPIOA 和 GPIOB 是**同一个 NVIC 向量**(IRQ 1 = `GROUP1_IRQHandler`)。
 
 `empty.c` 的主循环是空的, 常用接口见文件里的速查注释。典型待做项:
 
-- [ ] 循迹: 灰度 8 路 -> 位置误差 -> PID -> 左右轮差速(`system/line_follow.c` 需重写)
-- [ ] 按键启停: KEY1 开/关循迹, KEY2 备用
-- [ ] OLED 状态显示: 速度 / 偏差 / 模式
-- [ ] 航向纠偏: `mpu6050_update()` 固定周期 + PID
+- [x] 循迹: 灰度 8 路 -> 位置误差 -> PID -> 左右轮差速 (`system/line_follow.c` 最基础版)
+- [x] 按键启停: KEY1 开/关循迹
+- [x] OLED 状态显示: 灰度位图 / 线偏差 / 左右轮占空比
+- [ ] **循迹实车调参**: 标定 `LF_LINE_LEVEL`(传感器极性)、`LF_STEER_SIGN`(转向极性)、
+      `LF_KP`/`LF_KD`(调 PID)、`LF_BASE_DUTY`(速度) —— 参数全在 `line_follow.c` 顶部
+- [ ] 航向纠偏: `mpu6050_update()` 固定周期 + PID (先解决 5.4 的超时问题)
+- [ ] 轮速编码器: 用空闲定时器 TIMG6/TIMG7 配 QEI 硬件解码(见 4.1)
+- [ ] 小车与云台耦合: 两套模块的 init 都加进 `empty.c`
 - [ ] 汉字字库: 现在 `oledfont.h` 里每个汉字表**只有「中」一个字**, 要显示别的字需自己取模

@@ -1,18 +1,36 @@
 /* ============================================================================
  *  empty.c —— 循迹小车(最基础版) + 串口调试
  * ----------------------------------------------------------------------------
- *  【当前阶段: 先把 8 路灰度调通】
- *      串口(UART2, TX=PB15, 115200, 8N1)每 100ms 打印一行:
- *          S=00001000 E=+014 AD=111
- *          S  : 8 路灰度的原始值, 从左到右。有黑线 = 1, 没有 = 0
- *          E  : 由 S 算出来的线偏差(-100~+100)
- *          AD : 通道选择脚 AD2/AD1/AD0 的电平(选完最后一路应该是 111)
+ *  【当前阶段: 传感器已调通, 开始接电机跑闭环】
  *
- *      怎么用:
- *          不用按任何键, 把车拿在手上, 让传感器在"黑线 / 白底"之间来回移动,
- *          看串口 S= 后面那 8 位有没有跟着变。
+ *  ─── 落地之前必须先做的两次"悬空验证"(车拿在手上, 轮子离地) ───
  *
- *  【如果 S 一直不动, 按这个顺序隔离】
+ *   验证 1: 前进方向对不对
+ *      按 KEY2 -> 两个轮子都往"前"转(推力应该推着车往前走), 再按一次停。
+ *      如果某个轮子反转了, 改 system/line_follow.c 里的
+ *      LF_LEFT_FWD_DIR / LF_RIGHT_FWD_DIR。
+ *
+ *   验证 2: 转向极性对不对(最关键的一步!)
+ *      桌上贴一条黑胶带当线, 车拿在手上, 让传感器对着那条线。
+ *      按 KEY1 开始循迹, 然后把传感器在线上慢慢左右平移, 盯屏幕最下面一行:
+ *          线往左偏  ->  L 变小、R 变大   ✓  左轮慢/右轮快 = 车往左拐
+ *          线往右偏  ->  R 变小、L 变大   ✓
+ *      如果反了(线往左偏反而左轮变快), 把 line_follow.c 里的
+ *      LF_STEER_SIGN 从 +1 改成 -1。
+ *
+ *   这两项都验证过了, 再把车放到线上按 KEY1, 它才会真的跟着线走。
+ *   (不验证直接落地跑, 极性一反车就会全速冲出去)
+ *
+ *  ─── 调试数据 ───
+ *      屏幕(每 100ms 刷新):
+ *          LF:STOP / LF:RUN / LF:TEST   循迹状态
+ *          S: 00011000                  8 路灰度原始值, 1 = 压到黑线
+ *          E: -014                      线偏差, 负 = 线在左, 正 = 线在右
+ *          L:040 R:040                  左轮/右轮实际输出占空比(%)
+ *      串口(UART2, TX=PB15, 115200 8N1)每 100ms 打印一行:
+ *          S=00011000 AD=111 E=-014 L=040 R=040
+ *
+ *  【万一以后 S 又不动了, 按这个顺序隔离】
  *      1) 看 AD= 是不是 111
  *           - 不是 111(比如一直 000) -> 通道选择脚没接好/没驱动, 查 PB24/PA24/PA26
  *      2) 把传感器的 OUT 线从 PA22 上拔下来, 然后手动把 PA22 短接到 3.3V 和 GND
@@ -24,7 +42,7 @@
  *
  *  【按键】
  *      KEY1 = 循迹 开/关        KEY2 = 电机自检(两轮 50%) 开/关
- *      建议: 传感器调通之前先别按 KEY1, 免得车乱跑
+ *      屏幕右下角一直显示 "K1:Run K2:Test" 提醒。
  * ==========================================================================*/
 #include "ti_msp_dl_config.h"
 #include <stdint.h>
@@ -42,6 +60,13 @@
 
 /* ---- 循迹控制 ---- */
 #include "line_follow.h"
+
+/* ---------- 串口调试开关 ----------
+ * 1 = 打开串口打印, 0 = 关掉。
+ * 为什么要能关: 串口是"一个字符一个字符死等发完"的, 一行 40 多个字符
+ * 大概要 3.8ms, 这段时间主循环被占住, 循迹的 10ms 控制周期会被拖出抖动。
+ * 对着电脑调参时开着(1)方便看数据; 正式放地上跑车建议关掉(0)。 */
+#define DBG_UART    1
 
 /* ---------- 时间节拍 ---------- */
 #define STEP_MS     10U         /* 循迹控制周期 */
@@ -63,7 +88,11 @@ void main_timer_INST_IRQHandler(void)
 
 /* ============================================================================
  *  串口调试打印 (PC_uart = UART2, TX = PB15, 115200)
+ * ----------------------------------------------------------------------------
+ *  整段被 DBG_UART 包住: 关掉时这些函数根本不参与编译,
+ *  否则"定义了却没人调用"会报 unused function 警告。
  * ==========================================================================*/
+#if DBG_UART
 
 static void pc_putc(char c)
 {
@@ -87,7 +116,29 @@ static void pc_put_signed4(int16_t v)
     pc_putc((char)('0' + (a % 10)));
 }
 
-/* 打印一行传感器状态:  S=00001000 E=+014 AD=111 */
+/* 打印 3 位无符号数, 固定 3 个字符: 040 / 100 / 000 */
+static void pc_put_u3(uint8_t v)
+{
+    if (v > 100U) { v = 100U; }
+    pc_putc((char)('0' + (v / 100U) % 10U));
+    pc_putc((char)('0' + (v / 10U) % 10U));
+    pc_putc((char)('0' + (v % 10U)));
+}
+
+/* 打印一行状态:  S=00011000 AD=111 E=-014 L=040 R=040
+ *
+ *   S   : 8 路灰度原始值, 从左到右, 1 = 黑线
+ *   AD  : 通道选择脚 AD2/AD1/AD0 的实际电平
+ *   E   : 线偏差, 负 = 线在左边, 正 = 线在右边
+ *   L/R : 左轮/右轮"实际输出"的占空比(%)
+ *
+ * 关键用法(悬空验证转向极性, 不用把车放地上冒险):
+ *   用手拿住车让轮子悬空, 按 KEY1 开始循迹,
+ *   然后把传感器在黑线上慢慢左右平移, 观察 L 和 R:
+ *       线往左偏  ->  左轮变慢(L 变小)、右轮变快(R 变大)   => 极性正确
+ *       线往右偏  ->  右轮变慢(R 变小)、左轮变快(L 变大)   => 极性正确
+ *   如果反了(线往左偏反而左轮变快), 就把 system/line_follow.c 里的
+ *   LF_STEER_SIGN 从 +1 改成 -1。 */
 static void pc_print_sensor(void)
 {
     uint16_t raw[GRAYSCALE_SENSOR_CHANNELS];
@@ -100,9 +151,6 @@ static void pc_print_sensor(void)
         pc_putc((raw[i] != 0U) ? '1' : '0');    /* 1 = 读到(黑线), 0 = 没读到 */
     }
 
-    pc_puts(" E=");
-    pc_put_signed4(line_follow_get_error());
-
     /* 通道选择脚 AD2/AD1/AD0 的实际电平:
      * 读完 8 路后最后一个选的是通道 7, 所以正常应该是 111。
      * 如果这里一直不是 111, 说明"选通道"这一步没生效。 */
@@ -111,8 +159,32 @@ static void pc_print_sensor(void)
     pc_putc(DL_GPIO_readPins(GrayS_AD1_PORT, GrayS_AD1_PIN) ? '1' : '0');
     pc_putc(DL_GPIO_readPins(GrayS_AD0_PORT, GrayS_AD0_PIN) ? '1' : '0');
 
+    pc_puts(" E=");
+    pc_put_signed4(line_follow_get_error());
+
+    /* 左右轮实际占空比 —— 悬空验证转向极性就看这两个数 */
+    pc_puts(" L=");
+    pc_put_u3(line_follow_get_left_duty());
+    pc_puts(" R=");
+    pc_put_u3(line_follow_get_right_duty());
+
     pc_puts("\r\n");
 }
+
+#else
+/* DBG_UART = 0: 打印用的接口全部变成空操作, 主循环里照旧调用即可 */
+#define pc_puts(s)          ((void)0)
+#define pc_print_sensor()   ((void)0)
+#endif
+
+/* 主循环里统一用这两个宏调, 这样开关一改, 调用处不用动 */
+#if DBG_UART
+#define DBG_SENSOR()        pc_print_sensor()
+#define DBG_MSG(s)          pc_puts(s)
+#else
+#define DBG_SENSOR()        ((void)0)
+#define DBG_MSG(s)          ((void)0)
+#endif
 
 /* ============================================================================
  *  屏幕显示
@@ -198,8 +270,9 @@ int main(void)
 
     OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
 
-    pc_puts("\r\n=== LINE SENSOR DEBUG ===\r\n");
-    pc_puts("S=8 channel raw (1=line), E=error, AD=channel pins\r\n");
+    DBG_MSG("\r\n=== LINE FOLLOW ===\r\n");
+    DBG_MSG("S=00011000 AD=111 E=-014 L=040 R=040\r\n");
+    DBG_MSG("K1=follow on/off   K2=motor test\r\n");
 
     led_off(1);
     led_off(2);
@@ -226,8 +299,8 @@ int main(void)
                 line_follow_start();
             }
             show_status();
-            pc_puts("[KEY1] ");
-            pc_puts(line_follow_is_running() ? "follow ON\r\n" : "follow OFF\r\n");
+            DBG_MSG("[KEY1] ");
+            DBG_MSG(line_follow_is_running() ? "follow ON\r\n" : "follow OFF\r\n");
         }
 
         /* ---------------- KEY2: 电机自检 ---------------- */
@@ -237,8 +310,8 @@ int main(void)
             s_test_mode = (uint8_t)((s_test_mode == 0U) ? 1U : 0U);
             line_follow_test_wheels(s_test_mode);
             show_status();
-            pc_puts("[KEY2] ");
-            pc_puts(s_test_mode ? "motor TEST on\r\n" : "motor TEST off\r\n");
+            DBG_MSG("[KEY2] ");
+            DBG_MSG(s_test_mode ? "motor TEST on\r\n" : "motor TEST off\r\n");
         }
 
         /* ---------------- 每 10ms: 循迹控制 ---------------- */
@@ -252,7 +325,7 @@ int main(void)
         if ((now - last_uart_ms) >= UART_MS)
         {
             last_uart_ms = now;
-            pc_print_sensor();
+            DBG_SENSOR();
         }
 
         /* ---------------- 每 100ms: 刷屏 ---------------- */

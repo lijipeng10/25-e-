@@ -169,6 +169,20 @@
 #define LF_KI               0       /* 最基础版本先不用积分项 */
 #define LF_KD               0       /* 见上面: 数字量误差上 D 只会帮倒忙 */
 
+/* ★ 死区: |error| 小于它就当作"已经在线中间了", 输出 0, 不做任何修正。
+ *
+ * 为什么必须有它 —— 数字量传感器的误差是【一档 14】跳变的:
+ *   线正好压在中间两路 -> error = 0   -> steer 0
+ *   线偏过去压住一路   -> error = ±14 -> steer ±2
+ * 问题在于【车没法停在 ±14 上】: 它一动就跳到另一侧, 于是 steer 在
+ * +2 / 0 / -2 之间来回跳, 车就在线中间左右摆 —— 这就是"摇摆"的来源,
+ * 跟电机死区无关, 纯粹是量化台阶造成的。
+ *
+ * 取 15: 正好把 |error| = 14 这一档(只差一路)压掉, 只在线偏到 2 路以上时才修。
+ * 代价是车会在线中间 ±1 路以内自由浮动, 换来的是不摆。
+ * 如果觉得"偏了一路也不修"太松, 往下调到 10(但摆动会回来一点)。 */
+#define LF_DEADBAND         15
+
 /* ★★ 转向量上限 —— 这个值直接决定"转得过弯还是冲过弯" ★★
  *
  * 差速输出是:
@@ -224,13 +238,16 @@
                                        要能克服静摩擦把车拧动。 */
 #define LF_PIVOT_OK         20      /* |error| <= 这个值就算"对准了", 结束转向。
                                        相当于线落在中间 1~2 路以内。 */
-#define LF_PIVOT_TIMEOUT_MS 2500U   /* 转向最长持续这么久。一直找不到线就停车,
-                                       防止就地打转。 */
+#define LF_PIVOT_TRY_MS     900U    /* ★ 一个方向最多找这么久。到了还没找到线,
+                                       就【掉头往反方向找】—— 这是"估不准
+                                       往哪边转"的兜底: 两个方向都扫一遍,
+                                       总有一遍能扫到线, 不会一直原地转圈。
+                                       两个方向合计 2*900 = 1.8 秒封顶。 */
 
 /* 弯道参数的编译期检查。★ 注意必须放在这些宏【定义之后】——
  * 放在前面的话宏还没定义, 会被当成 0, 检查就没意义了(这里踩过一次)。 */
-#if (LF_PIVOT_TRIGGER_MS >= LF_PIVOT_TIMEOUT_MS)
-#error "LF_PIVOT_TRIGGER_MS 必须小于 LF_PIVOT_TIMEOUT_MS"
+#if (LF_PIVOT_TRIGGER_MS >= LF_PIVOT_TRY_MS)
+#error "LF_PIVOT_TRIGGER_MS 必须小于 LF_PIVOT_TRY_MS"
 #endif
 #if (LF_PIVOT_DUTY > LF_MAX_DUTY)
 #error "LF_PIVOT_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
@@ -256,10 +273,28 @@ static uint16_t s_raw[GRAYSCALE_SENSOR_CHANNELS];  /* 最近一次灰度的原�
 static int16_t s_error;             /* 最近一次偏差 -100~+100 */
 static uint8_t s_left_duty;         /* 最近一次左轮占空比(调试用) */
 static uint8_t s_right_duty;        /* 最近一次右轮占空比(调试用) */
-static int8_t  s_last_dir;          /* 记住"上次往哪边拐", 丢线和原地转向都要用 */
+static int8_t  s_last_dir;          /* 瞬时"上次往哪边拐"(只在丢线那几十毫秒用) */
 static uint16_t s_lost_ms;          /* 已经连续丢线多久(ms) */
+
+/* ★★ 方向证据 —— 决定弯道往哪边转 ★★
+ *
+ * 踩过的坑: 原来直接用 s_last_dir 定转向方向, 结果到弯道"算不出往哪边转"。
+ * 原因: s_last_dir 是【瞬时值】, 而直线上误差本来就在 ±14 之间抖, 每次小修正
+ *       都会把它在 +1 / -1 之间来回翻。到丢线那一刻, 它记下的只是最后一次
+ *       无意义的抖动, 跟弯的方向完全无关 —— 等于在猜。
+ *
+ * 改法: 累积"方向证据"。只在看到线的时候更新, 而且用泄漏积分:
+ *          s_dir_ev = s_dir_ev * 7/8 + error
+ *   效果: 直线上那种 ±14 的正负抖动会互相抵消(证据一直贴着 0 附近);
+ *         而弯道口那条【横扫过来的横向线】会连续好几拍给出同号的大偏差,
+ *         证据就会稳稳地积累到一边。这样判断的才是"趋势", 不是"噪声"。
+ * 限幅是为了让方向证据能及时被新情况翻转, 不至于被历史拖住。 */
+static int32_t  s_dir_ev;           /* 方向证据: 正 = 线一直在偏右, 负 = 偏左 */
+
 static uint8_t  s_pivoting;         /* 1 = 正在原地转向(弯道模式) */
-static uint16_t s_pivot_ms;         /* 已经原地转了多久(ms), 超时保护用 */
+static int8_t   s_pivot_dir;        /* 本次原地转向往哪边(开始时定下, 中途不变) */
+static uint8_t  s_pivot_try;        /* 0 = 第一遍(按证据方向), 1 = 第二遍(反方向) */
+static uint16_t s_pivot_ms;         /* 当前这一遍已经转了多久(ms) */
 
 /* ============================================================================
  *  内部函数
@@ -399,7 +434,7 @@ void line_follow_init(void)
      *   pid_init(&pid, kp, ki, kd, div, 积分限幅, 输出限幅, 死区, 最小dt)
      * 输出限幅就用 LF_MAX_STEER, 这样 PID 自己就会把转向量限制住。 */
     pid_init(&s_pid, LF_KP, LF_KI, LF_KD, 100,
-             0, LF_MAX_STEER, 0, LF_STEP_MS);
+             0, LF_MAX_STEER, LF_DEADBAND, LF_STEP_MS);   /* 死区见 LF_DEADBAND */
 
     s_running    = 0U;
     s_bits       = 0U;
@@ -408,18 +443,24 @@ void line_follow_init(void)
     s_right_duty = 0U;
     s_last_dir   = 0;
     s_lost_ms    = 0U;
+    s_dir_ev     = 0;
     s_pivoting   = 0U;
+    s_pivot_dir  = +1;
+    s_pivot_try  = 0U;
     s_pivot_ms   = 0U;
 }
 
 void line_follow_start(void)
 {
     pid_reset(&s_pid);          /* 清掉上次的积分/微分残留, 不然起步会猛地一拐 */
-    s_lost_ms  = 0U;
-    s_last_dir = 0;
-    s_pivoting = 0U;
-    s_pivot_ms = 0U;
-    s_running  = 1U;
+    s_lost_ms   = 0U;
+    s_last_dir  = 0;
+    s_dir_ev    = 0;        /* 方向证据也清空, 从头攒 */
+    s_pivoting  = 0U;
+    s_pivot_dir = +1;
+    s_pivot_try = 0U;
+    s_pivot_ms  = 0U;
+    s_running   = 1U;
 }
 
 void line_follow_stop(void)
@@ -471,12 +512,6 @@ void line_follow_step(void)
     {
         s_pivot_ms += LF_STEP_MS;
 
-        /* 超时保护: 转了这么久还没找到线, 说明已经跑出赛道了, 停车别乱转 */
-        if (s_pivot_ms >= LF_PIVOT_TIMEOUT_MS) {
-            line_follow_stop();
-            return;
-        }
-
         /* 线重新出现在【中间附近】= 车头已经对准新方向 -> 停转, 回去循迹。
          * 为什么要求"在中间": 转的过程中线会从一边扫到另一边, 如果一看到线
          * 就停, 车头还是歪的。等它扫到中间, 才说明车头正对着新方向。 */
@@ -484,10 +519,26 @@ void line_follow_step(void)
             pid_reset(&s_pid);      /* 清掉转向过程中残留的量, 免得接着猛拐一下 */
             s_lost_ms  = 0U;
             s_pivoting = 0U;
+            s_dir_ev   = 0;         /* 这一弯的证据用完了, 清空, 下一弯重新攒 */
             /* 这里【不 return】: 直接落下去按正常循迹走一拍, 衔接更顺 */
         }
         else {
-            lf_pivot(s_last_dir);   /* 还没对准, 继续原地转 */
+            /* ★ 兜底: 一个方向找够了还没扫到线, 就【掉头往反方向找】。
+             *   这样不管方向证据猜得对不对, 两个方向都扫一遍总能扫到,
+             *   车就不会一直在那儿原地转圈了。 */
+            if (s_pivot_ms >= LF_PIVOT_TRY_MS) {
+                if (s_pivot_try == 0U) {
+                    s_pivot_try = 1U;
+                    s_pivot_ms  = 0U;
+                    s_pivot_dir = (int8_t)(-s_pivot_dir);   /* 掉头 */
+                } else {
+                    /* 两边都扫遍了还是没有线 -> 车多半已经掉出赛道, 停车 */
+                    line_follow_stop();
+                    return;
+                }
+            }
+
+            lf_pivot(s_pivot_dir);  /* 还没对准, 继续原地转 */
             return;
         }
     }
@@ -502,6 +553,13 @@ void line_follow_step(void)
         s_lost_ms = 0U;
         base      = LF_BASE_DUTY;
 
+        /* 累积"往哪边偏"的方向证据(见 s_dir_ev 的说明)。
+         * 只在这里更新 —— 丢线时不更新, 这样弯道口攒下来的证据能保住,
+         * 供原地转向决定方向用。 */
+        s_dir_ev = (s_dir_ev * 7) / 8 + (int32_t)error;
+        if (s_dir_ev >  400) { s_dir_ev =  400; }
+        if (s_dir_ev < -400) { s_dir_ev = -400; }
+
         /* 把"线的左右偏差"喂给 PID, 输出转向量。
          * 乘 LF_STEER_SIGN 是为了方便一键反方向。 */
         steer = pid_update(&s_pid, (int32_t)error * LF_STEER_SIGN, LF_STEP_MS);
@@ -513,11 +571,17 @@ void line_follow_step(void)
         if (s_lost_ms >= LF_PIVOT_TRIGGER_MS) {
             /* ★ 连续丢线够久了 -> 判定"到弯节点了":
              *   先【停住】(别冲过节点), 再转到状态 A 去把车头拧正。
-             *   s_last_dir 是最后一次拐弯的方向, 也就是线消失的方向。
-             *   如果一个方向都没记下(从头到尾没拐过), 默认往右找。 */
-            if (s_last_dir == 0) { s_last_dir = +1; }
-            s_pivoting = 1U;
-            s_pivot_ms = 0U;
+             *
+             * 往哪边转: 看【方向证据】(见 s_dir_ev 的说明), 不看瞬时值。
+             * 证据不够就退回最后一次拐弯方向, 再不够就默认往右。
+             * 反正状态 A 里找不到会自动掉头扫另一边, 猜错也不会卡死。 */
+            if (s_dir_ev > 0)      { s_pivot_dir = +1; }
+            else if (s_dir_ev < 0) { s_pivot_dir = -1; }
+            else                   { s_pivot_dir = (s_last_dir != 0) ? s_last_dir : +1; }
+
+            s_pivoting  = 1U;
+            s_pivot_try = 0U;
+            s_pivot_ms  = 0U;
             lf_stop_wheels();               /* 立刻停住, 不要冲过节点 */
             return;
         }

@@ -114,23 +114,14 @@
  * 为什么要能关: 串口是"一个字符一个字符死等发完"的, 一行 40 多个字符
  * 大概要 3.8ms, 这段时间主循环被占住, 循迹的 10ms 控制周期会被拖出抖动。
  * 对着电脑调参时开着(1)方便看数据; 正式放地上跑车建议关掉(0)。 */
-#define DBG_UART    0
+#define DBG_UART    1
 
-/* ---------- 板上 LED 的分工 ----------
- * 三个 LED 都在 SysConfig 里那个叫 led 的 GPIO 实例下:
- *      0 = LED0 = PB21      1 = LED1 = PB2      2 = LED2 = PB3
- * ★ 哪个不亮(或者没接), 就把对应的数字改掉即可, 不用动别的地方。
+/* ---------- 关于板上的 LED ----------
+ * 现在用的是【最小系统板】, PB2 / PB3 / PB21 都没有接 LED, 所以一切诊断
+ * 都走 OLED + 串口, 代码里不再用 led_on() / led_off()。
+ * (hardware/led.c 那个驱动保留着, 等正式板子到了直接就能用。)
  *
- * 分工:
- *      LED_FAULT 死机指示: 快闪几下 = NMI / HardFault(见 fault_blink)
- *      LED_HEART 心跳: 主循环活着就一直闪(不依赖 SysTick)
- *      LED_RUN   循迹中常亮
- *
- * 注: 板子上的 LED 如果怎么都不亮, 先怀疑极性反了 ——
- *     见 hardware/led.c 顶部注释, 把 setPins / clearPins 对调即可。 */
-#define LED_FAULT   0
-#define LED_HEART   1
-#define LED_RUN     2
+ * 由此可见: 之前"三个 LED 都不亮"不是电路坏了, 是引脚上根本没器件。 */
 
 /* ---------- 时间节拍 ---------- */
 #define STEP_MS     10U         /* 循迹控制周期 */
@@ -146,8 +137,7 @@ static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关 */
  * 屏幕冻住的时候看 LED2: 还在闪 = CPU 在跑; 不闪 = CPU 真停了。
  * 数值随便, 只影响闪的快慢, 越大越慢。 */
 #define HB_LOOPS    300000U
-static uint32_t s_hb       = 0U;    /* 心跳计数 */
-static uint8_t  s_hb_state = 0U;    /* LED2 当前状态 */
+static uint32_t s_hb = 0U;          /* 心跳计数 */
 
 /* ---------------------------------------------------------------------------
  *  中断服务: main_timer(TIMA0, 50ms) 里扫键
@@ -317,46 +307,48 @@ static void show_status(void)
 }
 
 /* ============================================================================
- *  故障兜底 —— 让"死机"看得见
+ *  故障兜底 —— 让"死机"看得见(走串口 + OLED, 因为最小系统板上没有 LED)
  * ----------------------------------------------------------------------------
  *  CMSIS 启动文件里, NMI / HardFault 这些异常默认都是弱定义的 while(1) 空转,
  *  也就是说一旦 CPU 跑飞, 现场和"正常运行"长得一模一样, 根本分不出来。
- *  这里改成疯狂闪 LED1, 一眼就能分开三种"停":
+ *  这里改成: 串口打一行 "!!! HARDFAULT !!!" / "!!! NMI !!!", OLED 上也写出来,
+ *  然后【停在那里不动】。所以症状特别好认 —— 屏幕定格在 !! FAULT !!。
  *
- *      LED1 快闪 1 下 + 长停   = NMI
- *      LED1 快闪 2 下 + 长停   = HardFault  (供电不稳导致取指/访存出错)
- *      LED1 不闪, LED2 在闪    = CPU 没事, 卡在别的地方(比如时基停了)
- *      LED1 / LED2 都不动      = CPU 真停了
- *
- *  为什么用 LED 而不是往屏幕上写字: 异常发生时 SPI 可能已经不可靠了,
- *  写 GPIO 最皮实, 只要有电就能亮。
+ *  ★ 为什么串口发送要自己写一份带超时的: 平时的 pc_putc() 是
+ *        while (DL_UART_isBusy(...)) { }     死等
+ *    异常发生时外设可能已经不正常了, 用死等版会让异常处理本身也卡住,
+ *    反而一个字都看不到。所以下面这份加了循环次数上限, 发不出去就算了。
  * ==========================================================================*/
-static void fault_blink(uint8_t times)
+static void fault_putc(char c)
 {
-    uint8_t i;
+    uint32_t guard = 200000U;       /* 最多等这么多圈, 超了就硬发 */
 
-    while (1)
-    {
-        for (i = 0U; i < times; i++)
-        {
-            led_on(LED_FAULT);
-            delay_ms(60U);
-            led_off(LED_FAULT);
-            delay_ms(60U);
-        }
-        delay_ms(700U);         /* 组间长停, 方便数闪了几下 */
-    }
+    while (DL_UART_isBusy(PC_uart_INST) && (guard != 0U)) { guard--; }
+    DL_UART_transmitData(PC_uart_INST, (uint8_t)c);
 }
 
-void NMI_Handler(void)
+static void fault_puts(const char *s)
 {
-    fault_blink(1U);
+    while (*s != 0) { fault_putc(*s++); }
 }
 
-void HardFault_Handler(void)
+static void fault_report(const char *name)
 {
-    fault_blink(2U);
+    fault_puts("\r\n!!! ");
+    fault_puts(name);
+    fault_puts(" !!!\r\n");
+
+    /* 屏幕上再写一遍, 这样不接串口也能看到 */
+    OLED_Clear();
+    OLED_ShowString(0,  0, (u8 *)"!! FAULT !!", 16);
+    OLED_ShowString(0, 24, (u8 *)name,          16);
+    OLED_Refresh();
+
+    while (1) { }                   /* 停住, 让人能看清 */
 }
+
+void NMI_Handler(void)       { fault_report("NMI"); }
+void HardFault_Handler(void) { fault_report("HARDFAULT"); }
 
 /* ============================================================================
  *  主程序
@@ -368,14 +360,23 @@ int main(void)
     uint32_t last_uart_ms;
 
     /* ======================= 1. 外设初始化 ======================= */
+    /* ★ 串口的初始化在 SYSCFG_DL_init() 里面, 所以打点只能从它【之后】开始。
+     *   判断"有没有卡在开机时钟初始化"的办法:
+     *      串口一直不出 [1] 这行  -> 就是卡在 SYSCFG_DL_init() 里 = 时钟没起来
+     *      OLED 一直全黑          -> 同上(OLED 的 SPI 也在里面初始化) */
     SYSCFG_DL_init();
+    DBG_MSG("\r\n=== BOOT ===\r\n");
+    DBG_MSG("[1] SYSCFG_DL_init OK  (clock init did NOT hang)\r\n");
+
     tick_init();
     key_init();
     motor_init();
     Grayscale_Sensor_Init();
     OLED_Init();
+    DBG_MSG("[2] tick/key/motor/grayscale/OLED OK\r\n");
 
     line_follow_init();
+    DBG_MSG("[3] line_follow OK -> entering main loop\r\n");
 
     /* 故意不初始化 MPU6050: 本阶段不用, 而且它的 I2C 读没有超时保护 */
 
@@ -396,8 +397,7 @@ int main(void)
     DBG_MSG("S=00011000 AD=111 E=-014 L=040 R=040\r\n");
     DBG_MSG("K1=follow on/off   K2=motor test\r\n");
 
-    led_off(LED_RUN);
-    led_off(LED_HEART);
+
 
     show_status();
 
@@ -412,17 +412,17 @@ int main(void)
         uint8_t  code = key_getnum();
 
         /* ---------------- 心跳: 证明 CPU 还活着 ----------------
-         * 这一段【不看时间, 只看循环次数】, 所以就算 SysTick 停了它也照样跑。
-         * 调试用: 屏幕冻住的时候瞄一眼 LED2 ——
-         *      还在闪  -> CPU 在跑, 说明是时基(SysTick)停了或者判断条件出问题
-         *      不闪了  -> CPU 真卡住了, 去看 LED1 的闪法(异常)或排查外设等待
-         * 正常工作时它闪得比 LED1 快很多, 这是故意的, 好区分。 */
+         * ★ 这一段【不看时间, 只数循环圈数】, 所以就算 SysTick 停了它也照样打。
+         * 卡住的时候看串口:
+         *      心跳(HB)还在往外打 -> CPU 在跑, 是时基(SysTick)停了或者
+         *                            哪个 (now - last) >= xx 的判断出问题
+         *      心跳也停了         -> CPU 真卡住了
+         *                            (如果是异常, 会先打 "!!! HARDFAULT !!!") */
         s_hb++;
         if (s_hb >= HB_LOOPS)
         {
             s_hb = 0U;
-            if (s_hb_state == 0U) { s_hb_state = 1U; led_on(LED_HEART); }
-            else                  { s_hb_state = 0U; led_off(LED_HEART); }
+            DBG_MSG("HB\r\n");
         }
 
         /* ---------------- KEY1: 循迹 开/关 ---------------- */
@@ -471,10 +471,6 @@ int main(void)
             show_status();
         }
 
-        if (line_follow_is_running()) {
-            led_on(LED_RUN);
-        } else {
-            led_off(LED_RUN);
-        }
+
     }
 }

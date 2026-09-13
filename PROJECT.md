@@ -155,6 +155,45 @@ GPIOA 和 GPIOB 是**同一个 NVIC 向量**(IRQ 1 = `GROUP1_IRQHandler`)。
 > 否则占空比会按比例失真。
 > 之前用过 `timerCount=100` -> PWM 198kHz, 超出 TB6612 上限, 表现为**电机狂转、噪音大、震动**。
 
+#### 5.2.1 ★★ 占空比换算是「反」的（已修的严重 bug）
+
+MSPM0 的 TimerG 在 EDGE_ALIGN PWM 模式下**从 LOAD 往下数**，CCP 输出在
+「计数 > 比较值」这段时间为高，所以：
+
+```
+实际占空比 = (周期 - 比较值) / 周期        <-- 比较值越大, 占空比越小!
+```
+
+TI 自己的 SysConfig 就是这么算的，见
+`source/ti/driverlib/.meta/pwm/PWMTimerCC.syscfg.js` 第 107 行：
+
+```js
+proposedccValue = Math.round( (100 - inst.dutyCycle) * (period) / 100) - 1;
+```
+
+官方例 `timx_timer_mode_pwm_edge_sleep` 也可交叉验证：
+`timerCount = 2000`、`dutyCycle = 75` -> 生成 `ccValue = 500`（不是 1500）。
+
+**踩过的坑**：`motor.c` 原来写成 `cmp = duty * PERIOD / 100`，正好写反了：
+
+| `motor_set_duty()` 填的值 | 实际输出占空比 |
+| --- | --- |
+| 20 | **80%** |
+| 40 | **60%** |
+| 50 | 50%（唯一对称点，所以「填 50 看着是对的」，极易漏过去） |
+| 90 | **10%** |
+
+两个后果：
+
+1. 表观现象是「**速度数值越大反而越慢**」，很容易误判成电机或机械问题
+2. 更严重的是**循迹的差速方向也是反的** —— 想让左轮快，比较值变大，左轮实际更慢。
+   闭环变成正反馈，车会朝着偏离方向越走越远。而因为 50 是守恒点，
+   「KEY2 自检」看起来还完全正常，非常有迷惑性。
+
+**修复**：`motor_duty_to_cmp()` 改成 `(100 - duty) * PERIOD / 100`。
+同理 `motor_init()` 里给占空比清零**不能直接写 0**（比较值 0 = 100% 占空比），
+必须写 `motor_duty_to_cmp(0)`。
+
 ### 5.3 按键
 
 | 项目 | 值 | 说明 |

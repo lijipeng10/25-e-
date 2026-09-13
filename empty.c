@@ -52,10 +52,13 @@
  *          LF_LOST_DUTY     丢线找线速度                默认 35
  *          LF_TEST_DUTY     KEY2 自检速度               默认 50
  *          LF_MAX_STEER     转向量上限(差速幅度)         默认 40
- *          LF_KP / LF_KD    转向 PID                    默认 40 / 12
+ *          LF_KP / LF_KD    转向 PID 的 P / D            默认 40 / 0
+ *                           ★ D 必须是 0 或很小, 理由见文件里的推导
  *          LF_STEER_SIGN    转向极性 +1 / -1            默认 +1
  *          LF_LINE_LEVEL    灰度"压线"判定电平           默认 1
  *          LF_LEFT/RIGHT_FWD_DIR  两轮"前进"方向值       1 / 2
+ *          LF_TRIM          左右电机补偿(车往左偏就加大) 默认 3
+ *                           按 KEY2 在长直道上调, 直到车走直
  * ==========================================================================*/
 #include "ti_msp_dl_config.h"
 #include <stdint.h>

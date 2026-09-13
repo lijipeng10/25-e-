@@ -57,6 +57,29 @@
 #define LF_LEFT_FWD_DIR     1U
 #define LF_RIGHT_FWD_DIR    2U
 
+/* ---------- 左右电机补偿 (trim) ----------
+ * 两个电机不可能一模一样: 死区、齿轮箱阻力、轮胎摩擦都有差别。
+ * 表现就是"给两个轮子同样的占空比, 车却往一边拐"。
+ *
+ *   LF_TRIM > 0  ->  右轮多出力、左轮少出力   => 车"往左偏"时用正数
+ *   LF_TRIM < 0  ->  左轮多出力、右轮少出力   => 车"往右偏"时用负数
+ *
+ * 注意这里是一加一减: 左轮 -LF_TRIM, 右轮 +LF_TRIM。
+ * 这样车的平均速度不变, 只改"左右谁出力多", 不会改变整体快慢。
+ *
+ * 【怎么调】
+ *   1) 找一段长直道, 按 KEY2 (两轮同时 50%, 见 line_follow_test_wheels)。
+ *      KEY2 时两个轮子本来是完全一样的指令, 所以车拐弯的唯一原因就是电机差异。
+ *   2) 从 3 开始试:
+ *          往左偏 -> LF_TRIM 调大 (3 -> 4 -> 5 ...)
+ *          往右偏 -> LF_TRIM 调小 (3 -> 2 -> 1 -> 0 ...)
+ *   3) 调到 KEY2 直行为止, 再放回循迹。
+ *
+ * 为什么用"加减固定值"而不是"乘一个系数":
+ *   两个电机的差别主要来自死区不一样 —— 要让它们转速相同, 需要的其实是一个
+ *   固定的占空比差, 和当前速度无关。所以固定加减在任何速度下都对。 */
+#define LF_TRIM             3
+
 /* ---------- 灰度传感器 ---------- */
 /* 灰度读到哪个值算"压线"。用调试画面看: 车压黑线时对应位变 1 就对了;
  * 如果反了(压线时是 0), 把这个改成 0。 */
@@ -321,6 +344,11 @@ void line_follow_step(void)
     left_cmd  = base + steer;       /* 线偏左时 steer<0 -> 左轮慢 */
     right_cmd = base - steer;       /*                    右轮快 */
 
+    /* 再补上"两个电机本身不一样"这一步。见 LF_TRIM 的说明。
+     * 一加一减, 平均速度不变, 只调左右出力的分配。 */
+    left_cmd  -= LF_TRIM;
+    right_cmd += LF_TRIM;
+
     /* 限幅: 两边都不许倒转, 慢的一侧最多降到 0。
      * (最基础版本先这么保守, 稳住不跑飞比较重要) */
     if (left_cmd  < 0) { left_cmd  = 0; }
@@ -348,11 +376,23 @@ void line_follow_get_raw(uint16_t *out)
 
 void line_follow_test_wheels(uint8_t on)
 {
+    int32_t l, r;
+
     if (on != 0U) {
-        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  LF_TEST_DUTY);
-        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, LF_TEST_DUTY);
-        s_left_duty  = LF_TEST_DUTY;
-        s_right_duty = LF_TEST_DUTY;
+        /* ★ 自检故意也带上 LF_TRIM:
+         *   两个轮子本来发的是完全相同的指令, 所以车拐弯的唯一原因就是
+         *   电机本身的差异。于是 KEY2 就成了调 LF_TRIM 最快的工具 ——
+         *   看车直不直, 直接改 LF_TRIM, 不用反复进循迹模式试。 */
+        l = (int32_t)LF_TEST_DUTY - LF_TRIM;
+        r = (int32_t)LF_TEST_DUTY + LF_TRIM;
+        if (l < 0) { l = 0; }
+        if (r < 0) { r = 0; }
+
+        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  l);
+        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, r);
+
+        s_left_duty  = (uint8_t)l;
+        s_right_duty = (uint8_t)r;
     } else {
         lf_stop_wheels();
     }

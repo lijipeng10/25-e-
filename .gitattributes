@@ -1,0 +1,25 @@
+# ============================================================================
+#  .gitattributes —— 统一换行符, 避免跨平台/编辑器造成整文件 diff
+# ============================================================================
+# 仓库内统一存 LF, 检出到工作区按平台处理
+* text=auto
+
+# 明确按文本处理的源码/配置文件
+*.c        text
+*.h        text
+*.md       text
+*.txt      text
+*.py       text
+*.syscfg   text
+*.ccxml    text
+*.html     text
+*.cproject text
+*.project  text
+*.ccsproject text
+
+# 二进制文件不要做换行转换
+*.o    binary
+*.out  binary
+*.map  binary
+*.hex  binary
+*.bin  binary

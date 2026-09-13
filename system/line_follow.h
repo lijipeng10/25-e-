@@ -45,8 +45,16 @@ void line_follow_step(void);
 /* 最近一次的线偏差: -100(线在最左) ~ 0(正中) ~ +100(线在最右) */
 int16_t line_follow_get_error(void);
 
-/* 最近一次 8 路灰度的位图: bit0 = 最左那路, 1 = 压线 */
+/* 最近一次 8 路灰度的位图: bit0 = 最左那路, 1 = 压线(已经和 LF_LINE_LEVEL 比过了) */
 uint8_t line_follow_get_bits(void);
+
+/* 最近一次 8 路灰度的"原始值"(每路 0 或 1, 没做任何极性判断)
+ * 标定传感器时看这个: 车压线时对应位变不变, 一眼就能判断极性对不对 */
+void line_follow_get_raw(uint16_t *out);
+
+/* 电机自检: on=1 -> 两个轮子都按"前进"方向转 50%; on=0 -> 停
+ * 用来单独验证电机和接线(不经过循迹逻辑), 排查"某个轮子不转"时很好用 */
+void line_follow_test_wheels(uint8_t on);
 
 /* 最近一次左右轮实际输出了多少占空比(0~100) */
 uint8_t line_follow_get_left_duty(void);

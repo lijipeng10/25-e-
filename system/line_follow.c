@@ -40,7 +40,10 @@
 
 /* ---------- 速度 ---------- */
 #define LF_BASE_DUTY        40      /* 直行基础速度(占空比 %)。太小带不动电机 */
-#define LF_LOST_DUTY        25      /* 丢线时的速度(降速找线) */
+#define LF_LOST_DUTY        35      /* 丢线时的速度(降速找线)。
+                                       注意: 不能设太低! 不同电机的启动死区不一样,
+                                       25% 时可能有的一侧转动、另一侧不动。 */
+#define LF_TEST_DUTY        50      /* 电机自检用的占空比(和手动测试时一样) */
 
 /* ---------- 轮子映射 ---------- */
 /* 电机编号: 1 = A路(PB17/PB18), 2 = B路(PB19/PB23) */
@@ -94,7 +97,8 @@ static const int8_t LF_WEIGHT[GRAYSCALE_SENSOR_CHANNELS] = {
 
 static Pid     s_pid;               /* 转向 PID */
 static uint8_t s_running;           /* 1 = 正在循迹 */
-static uint8_t s_bits;              /* 最近一次灰度位图(1 = 压线) */
+static uint8_t s_bits;              /* 最近一次灰度位图(1 = 压线, 已按 LF_LINE_LEVEL 判断) */
+static uint16_t s_raw[GRAYSCALE_SENSOR_CHANNELS];  /* 最近一次灰度的原始值(0/1) */
 static int16_t s_error;             /* 最近一次偏差 -100~+100 */
 static uint8_t s_left_duty;         /* 最近一次左轮占空比(调试用) */
 static uint8_t s_right_duty;        /* 最近一次右轮占空比(调试用) */
@@ -117,8 +121,10 @@ static uint8_t lf_read_bits(void)
     Grayscale_Sensor_Read_All(g);       /* 这个函数内部有 ~400us 延时, 别调太快 */
 
     for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++) {
+        s_raw[i] = g[i];                    /* 原样存一份给调试显示用 */
+
         if (g[i] == LF_LINE_LEVEL) {
-            bits |= (uint8_t)(1U << i); /* 第 i 路压线了, 把第 i 位置 1 */
+            bits |= (uint8_t)(1U << i);     /* 第 i 路压线了, 把第 i 位置 1 */
         }
     }
     return bits;
@@ -300,6 +306,27 @@ void line_follow_step(void)
 /* ============================================================================
  *  调试接口
  * ==========================================================================*/
+
+void line_follow_get_raw(uint16_t *out)
+{
+    uint8_t i;
+    if (out == 0) { return; }
+    for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++) {
+        out[i] = s_raw[i];
+    }
+}
+
+void line_follow_test_wheels(uint8_t on)
+{
+    if (on != 0U) {
+        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  LF_TEST_DUTY);
+        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, LF_TEST_DUTY);
+        s_left_duty  = LF_TEST_DUTY;
+        s_right_duty = LF_TEST_DUTY;
+    } else {
+        lf_stop_wheels();
+    }
+}
 
 int16_t line_follow_get_error(void)      { return s_error; }
 uint8_t line_follow_get_bits(void)       { return s_bits; }

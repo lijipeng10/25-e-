@@ -158,19 +158,38 @@
 #define LF_KI               0       /* 最基础版本先不用积分项 */
 #define LF_KD               0       /* 见上面: 数字量误差上 D 只会帮倒忙 */
 
-#define LF_MAX_STEER        6       /* 转向量上限(差速幅度)。
-                                       极限情况下: 快的一侧 = 基础速度 + 它,
-                                       慢的一侧 = 基础速度 - 它。
-                                       不能太大, 否则慢的一侧会降到 0 以下。 */
+/* ★★ 转向量上限 —— 这个值直接决定"转得过弯还是冲过弯" ★★
+ *
+ * 差速输出是:
+ *      慢的一侧 = LF_BASE_DUTY - steer
+ *      快的一侧 = LF_BASE_DUTY + steer
+ *
+ * 【转弯力度 = 快的一侧 - 慢的一侧】, 也就是看这个差有多大。
+ * 而要让这个差达到最大(= LF_MAX_DUTY, 也就是 20), 必须让【慢的一侧降到 0】。
+ * 于是得到唯一正确的约束:
+ *
+ *      LF_MAX_STEER >= LF_BASE_DUTY
+ *
+ * 代入数字看(基础速度 14):
+ *      LF_MAX_STEER =  6 -> 慢轮 8,  快轮 20 -> 速度差 12   <- 转不过弯
+ *      LF_MAX_STEER = 14 -> 慢轮 0,  快轮 20 -> 速度差 20   <- 正确
+ *
+ * 为什么之前会冲过弯道: 慢的一侧最低只能降到 LF_BASE_DUTY - LF_MAX_STEER,
+ * 只要它降不到 0, 速度差就上不去, 车就转不过来。
+ *
+ * 注意 LF_MAX_STEER 不需要大于 LF_BASE_DUTY —— 超出的部分会被 lf_set_wheel()
+ * 的硬顶截掉, 白给。取相等正好。 */
+#define LF_MAX_STEER        14
 
-/* 编译期检查: 基础速度 + 差速上限 不能超过最高速度。
- * 虽然 lf_set_wheel() 会兜底限幅, 但那会把转向"削掉", 逻辑就不是你想的了,
- * 所以这里直接让编译报错, 逼你改对。 */
-#if (LF_BASE_DUTY + LF_MAX_STEER) > LF_MAX_DUTY
-#error "LF_BASE_DUTY + LF_MAX_STEER 超过了 LF_MAX_DUTY, 请调小其中一个"
+/* 编译期检查: 参数配错了直接编译报错, 不要等到跑车才发现。 */
+#if (LF_BASE_DUTY > LF_MAX_DUTY)
+#error "LF_BASE_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
 #endif
-#if (LF_LOST_DUTY + LF_MAX_STEER) > LF_MAX_DUTY
-#error "LF_LOST_DUTY + LF_MAX_STEER 超过了 LF_MAX_DUTY, 请调小其中一个"
+#if (LF_LOST_DUTY > LF_MAX_DUTY)
+#error "LF_LOST_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
+#endif
+#if (LF_MAX_STEER < LF_BASE_DUTY)
+#error "LF_MAX_STEER 必须 >= LF_BASE_DUTY: 否则慢的一侧降不到 0, 速度差上不去, 会冲过弯道"
 #endif
 
 /* ---------- 丢线保护 ---------- */

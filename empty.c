@@ -52,14 +52,17 @@
  *          LF_BASE_DUTY     直行基础速度                      14
  *          LF_LOST_DUTY     丢线找线速度                      12
  *          LF_TEST_DUTY     KEY2 自检速度                     20
- *          LF_MAX_STEER     转向量上限(差速幅度)               6
+ *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               14
+ *                           ★★ 必须 >= LF_BASE_DUTY, 理由见文件里的推导:
+ *                             它决定"慢的一侧能降到多低", 降不到 0 就转不过弯
  *          LF_KP / LF_KD    转向 PID 的 P / D                 20 / 0
  *                           ★ D 必须是 0 或很小, 理由见文件里的推导
  *                           ★ KP 必须和 LF_MAX_STEER 配套改, 见文件里说明
  *
- *      ★ 约束: LF_BASE_DUTY + LF_MAX_STEER <= LF_MAX_DUTY
- *              LF_LOST_DUTY + LF_MAX_STEER <= LF_MAX_DUTY
- *        违反了会直接编译报错(#error), 不会悄悄超速。
+ *      ★ 约束(违反了直接编译报错, 不会等跑车才发现):
+ *          LF_BASE_DUTY <= LF_MAX_DUTY
+ *          LF_LOST_DUTY <= LF_MAX_DUTY
+ *          LF_MAX_STEER >= LF_BASE_DUTY      <- 转弯力度靠这条
  *          LF_STEER_SIGN    转向极性 +1 / -1            默认 +1
  *          LF_LINE_LEVEL    灰度"压线"判定电平           默认 1
  *          LF_LEFT/RIGHT_FWD_DIR  两轮"前进"方向值       1 / 2

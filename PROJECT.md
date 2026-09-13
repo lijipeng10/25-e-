@@ -69,7 +69,7 @@
 | OLED | `hardware/oled.c` + `oledfont.h` | SH1106 SPI 驱动 |
 | 蜂鸣器 | `hardware/buzzer.c` | |
 
-### 3.2 遗留(云台项目, 编译但不初始化)
+### 3.2 云台模块(保留, 当前未初始化)
 
 | 模块 | 文件 | 说明 |
 | --- | --- | --- |
@@ -79,8 +79,9 @@
 | 视觉串口 | `system/uart.c` | UART1 环形缓冲, **占用 UART1_IRQHandler** |
 | 轮速编码器 | `hardware/encoder.c` | 轮速计算(当前未启用中断) |
 
-> ⚠️ 想删掉云台那套(sm_motor / sm_encoder / vision / uart), 直接删文件 + 从
-> `Debug` 重新构建即可; git 里有历史记录, 随时能找回。
+> 📌 **小车和云台都要保留**, 后续要在同一个主控里耦合运行。
+> 目前 `empty.c` 只初始化小车用到的外设; 云台那套代码保留、参与编译, 但暂不初始化。
+> 耦合时把这些模块的 init 一起加进 `empty.c` 即可(注意下面第 4 节的中断冲突)。
 
 ---
 
@@ -94,9 +95,31 @@
 | `UART1_IRQHandler` | UART1 | 视觉串口收字节(遗留) | `system/uart.c` |
 | `TIMA1_IRQHandler` / `TIMG12_IRQHandler` | TIMA1 / TIMG12 | 步进电机步进(遗留) | `hardware/sm_motor.c` |
 
-> ⚠️ **新增 GPIO 中断前注意**: GROUP1 已被 `sm_encoder.c` 占用。
-> 如果你要用 GPIO 中断(比如给轮速编码器计数), 要么把代码加到现有的
-> `GROUP1_IRQHandler` 里, 要么先把云台那套删掉。
+### 4.1 关于"GPIO 中断能不能换个中断"(重要)
+
+**不能。** MSPM0G3507 上:
+
+```c
+GPIOA_INT_IRQn = 1      // mspm0g350x.h:81
+GPIOB_INT_IRQn = 1      // mspm0g350x.h:80  <- 同一个中断号!
+```
+
+GPIOA 和 GPIOB 是**同一个 NVIC 向量**(IRQ 1 = `GROUP1_IRQHandler`)。
+所以只要走 GPIO 中断, 就必然和 MT6816 编码器共用一个中断服务函数。
+
+**轮速编码器计数有三种做法, 按推荐度排序:**
+
+| 方案 | 做法 | 评价 |
+| --- | --- | --- |
+| **① 定时器 QEI 硬件解码** | SysConfig 里加 **"TIMER - QEI"** 实例(Quadrature Encoder Interface), 用空闲定时器硬件做正交解码 | **最推荐**: 不占中断、不占 CPU, 直接读计数寄存器 |
+| ② 并入现有 GROUP1 | 在 `GROUP1_IRQHandler` 里分别判断 GPIOA/GPIOB 的中断状态位, 两个编码器各管各的引脚 | 可行, 简单; 注意各自清各自的挂起标志 |
+| ③ 定时器周期采样 | 定时器中断里定期读 A/B 电平做软件解码 | 不占 GPIO 中断, 但占 CPU, 高速时会丢计数 |
+
+空闲定时器(可用于 QEI 或方案③): **TIMG0、TIMG6、TIMG7**
+已占用: TIMA0(main_timer) / TIMA1(云台ST1) / TIMG12(云台ST2) / TIMG8(电机PWM)
+
+> QEI 具体支持哪些定时器, 在 SysConfig 里加一个 "TIMER - QEI" 实例,
+> 外设下拉框里能选的就是支持的。
 
 ---
 

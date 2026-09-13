@@ -122,31 +122,15 @@
  * ★ 哪个不亮(或者没接), 就把对应的数字改掉即可, 不用动别的地方。
  *
  * 分工:
- *      LED_BOOT  开机进度: 闪 1 下 = 进了 main; 再闪 2 下 = 时钟初始化过了
  *      LED_FAULT 死机指示: 快闪几下 = NMI / HardFault(见 fault_blink)
  *      LED_HEART 心跳: 主循环活着就一直闪(不依赖 SysTick)
  *      LED_RUN   循迹中常亮
  *
- * 现在把两个【最关键的诊断灯】都放在 PB21 上 —— 因为用户实测 PB2 那个不亮。
- * (注意 LED_BOOT 和 LED_FAULT 用同一个没关系: 开机那几下闪完之后,
- *  正常运行时才可能进异常处理, 两者不会同时出现。) */
-#define LED_BOOT    0
+ * 注: 板子上的 LED 如果怎么都不亮, 先怀疑极性反了 ——
+ *     见 hardware/led.c 顶部注释, 把 setPins / clearPins 对调即可。 */
 #define LED_FAULT   0
 #define LED_HEART   1
 #define LED_RUN     2
-
-/* boot_mark 跑在 SYSCFG_DL_init() 之前, 不能用 led_on(), 只能用裸的
- * IOMUX/PIN 宏, 所以这里按 LED_BOOT 的值把两个宏选出来。 */
-#if   (LED_BOOT == 0)
-#define LED_BOOT_PIN     led_LED0_PIN
-#define LED_BOOT_IOMUX   led_LED0_IOMUX
-#elif (LED_BOOT == 1)
-#define LED_BOOT_PIN     led_LED1_PIN
-#define LED_BOOT_IOMUX   led_LED1_IOMUX
-#else
-#define LED_BOOT_PIN     led_LED2_PIN
-#define LED_BOOT_IOMUX   led_LED2_IOMUX
-#endif
 
 /* ---------- 时间节拍 ---------- */
 #define STEP_MS     10U         /* 循迹控制周期 */
@@ -375,52 +359,6 @@ void HardFault_Handler(void)
 }
 
 /* ============================================================================
- *  开机进度指示 —— 专门用来定位"上电就卡住 / 按复位没用"
- * ----------------------------------------------------------------------------
- *  背景: 一换供电就卡死、按复位键没用, 而且【换成纯净电源也不改善】。
- *        所以供电基本可以排除, 嫌疑最大的是 SYSCFG_DL_init() 里的时钟初始化:
- *        那段代码里有【三处没有超时的死等】——
- *            两次测频率:  while (DL_SYSCTL_isFCCDone() == 0) { }
- *            一次等 PLL 锁: while (SYSCFG_DL_SYSCTL_SYSPLL_init() == false) { ... }
- *        (最后那个 TI 自己在注释里写了"This can lead an infinite loop" )
- *        这条时钟链是【外部晶振 HFXT -> PLL -> MCLK】。晶振起振本来就是
- *        概率性的(虚焊/负载电容/温度/板子受力都会有影响), 一旦没起振,
- *        上面任何一处就会【永远卡住】。
- *
- *        但"卡在时钟里"和"程序跑飞"从外面看一模一样, 所以先让它自己报出来。
- *
- *  做法: 在 SYSCFG_DL_init() 的【前后】各闪一次灯, 把启动过程切成三段。
- *
- *  ★ 注意: SYSCFG_DL_init() 之前 SysConfig 还没跑, 所以这里【不能】用
- *    led_on()/led_off() —— 它们依赖 SysConfig 的初始化。必须直接用 DL_GPIO
- *    裸操作, 引脚用 generated 头文件里的 led_LED1_IOMUX / led_PORT。
- *
- *  怎么读(上电或按复位后, 盯住 LED1):
- *      完全不亮                 -> CPU 连 main() 都没进到, 问题比时钟还早
- *      只闪 1 下(长)就再没动静   -> ★★ 就是死在 SYSCFG_DL_init() 里 = 时钟!
- *      闪 1 下, 停一下, 再连闪 2 下 -> 时钟初始化过了, 问题在别处
- *
- *  (SYSCFG_DL_init() 之前实际主频是复位的默认值 SYSOSC 32MHz, 而 delay_ms
- *   是按 80MHz 算的, 所以这一段延时实际会偏长 —— 无所谓, 能看清就行。)
- * ==========================================================================*/
-static void boot_mark(uint8_t times)
-{
-    uint8_t i;
-
-    DL_GPIO_initDigitalOutput(LED_BOOT_IOMUX);          /* 由 LED_BOOT 决定是哪个 */
-    DL_GPIO_enableOutput(led_PORT, LED_BOOT_PIN);
-
-    for (i = 0U; i < times; i++)
-    {
-        DL_GPIO_setPins(led_PORT, LED_BOOT_PIN);        /* 亮 */
-        delay_ms(150U);
-        DL_GPIO_clearPins(led_PORT, LED_BOOT_PIN);      /* 灭 */
-        delay_ms(150U);
-    }
-    delay_ms(500U);                                     /* 组间长停, 好数 */
-}
-
-/* ============================================================================
  *  主程序
  * ==========================================================================*/
 int main(void)
@@ -429,18 +367,8 @@ int main(void)
     uint32_t last_disp_ms;
     uint32_t last_uart_ms;
 
-    /* ======================= 0. 开机进度标记 =======================
-     * 先闪 1 下: 说明 CPU 已经跑到 main() 了(复位向量、启动文件都没问题)。
-     * 如果上电后 LED1 根本不亮, 那问题比时钟还早, 是另一回事。 */
-    boot_mark(1U);
-
     /* ======================= 1. 外设初始化 ======================= */
     SYSCFG_DL_init();
-
-    /* 再闪 2 下: 说明 SYSCFG_DL_init() 完整跑完了, 时钟初始化没问题。
-     * ★ 如果只看到第 1 下、等半天没有这 2 下, 那就【锁定】在时钟初始化了。 */
-    boot_mark(2U);
-
     tick_init();
     key_init();
     motor_init();

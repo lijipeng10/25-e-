@@ -28,12 +28,16 @@
 | **电机 A 路** | PWM = PB6, AIN1 = PB17, AIN2 = PB18 | TB6612 |
 | **电机 B 路** | PWM = PB7, BIN1 = PB19, BIN2 = PB23 | TB6612 |
 | **电机 STBY** | PA16 | 高 = 使能 |
-| **LED0** | PB21 | 开机进度 + 死机指示 (`LED_BOOT` / `LED_FAULT`) |
+| **LED0** | PB21 | 死机指示 (`LED_FAULT`) |
 | **LED1** | PB2 | 心跳: 主循环每转 HB_LOOPS 圈翻转一次 (`LED_HEART`) |
 | **LED2** | PB3 | 循迹中常亮 (`LED_RUN`) |
 
-> 用哪个 LED 由 `empty.c` 顶部的 `LED_BOOT / LED_FAULT / LED_HEART / LED_RUN`
-> 四个宏决定, 哪个不亮改那个数字(0 = PB21, 1 = PB2, 2 = PB3)即可。
+> 用哪个 LED 由 `empty.c` 顶部的 `LED_FAULT / LED_HEART / LED_RUN` 三个宏决定,
+> 哪个不亮改那个数字(0 = PB21, 1 = PB2, 2 = PB3)即可。
+>
+> ⚠️ **三个 LED 实测都不亮**(用户反馈)。要么是引脚/硬件问题, 要么是**极性反了** ——
+> `hardware/led.c` 是按「高电平点亮」写的, 如果你的板子是**低电平点亮**,
+> 把里面的 `setPins` / `clearPins` 对调, 三个灯会一起好。
 | **灰度传感器** | OUT = PA22, AD0 = PB24, AD1 = PA24, AD2 = PA26 | 8 路循迹 |
 | **MPU6050** | I2C0: SDA = PA0, SCL = PA1 | 陀螺仪(航向) |
 | **OLED** | SPI1: SCLK = PB9, MOSI = PB8 | 1.3 寸 128x64 SH1106, 7 针 |

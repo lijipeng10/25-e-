@@ -396,9 +396,13 @@ int main(void)
 
     OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
 
+    /* ★ 这里原来打印了两行【写死的样板数据】:
+     *       S=00011000 E=-014 L=040 R=040
+     *       K1=follow on/off   K2=motor test
+     *   它们跟下面真实的数据行长得一模一样, 极容易看错(实测就被骗过一次)。
+     *   所以只留"格式说明", 而且写成一眼能看出不是数据的样子。 */
     DBG_MSG("\r\n=== LINE FOLLOW ===\r\n");
-    DBG_MSG("S=00011000 E=-014 L=040 R=040\r\n");
-    DBG_MSG("K1=follow on/off   K2=motor test\r\n");
+    DBG_MSG("[format] S=8bits(1=on line)  E=-100..100  L/R=duty%%  HB=alive\r\n");
 
 
 

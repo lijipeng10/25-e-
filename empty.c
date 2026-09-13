@@ -116,6 +116,38 @@
  * 对着电脑调参时开着(1)方便看数据; 正式放地上跑车建议关掉(0)。 */
 #define DBG_UART    0
 
+/* ---------- 板上 LED 的分工 ----------
+ * 三个 LED 都在 SysConfig 里那个叫 led 的 GPIO 实例下:
+ *      0 = LED0 = PB21      1 = LED1 = PB2      2 = LED2 = PB3
+ * ★ 哪个不亮(或者没接), 就把对应的数字改掉即可, 不用动别的地方。
+ *
+ * 分工:
+ *      LED_BOOT  开机进度: 闪 1 下 = 进了 main; 再闪 2 下 = 时钟初始化过了
+ *      LED_FAULT 死机指示: 快闪几下 = NMI / HardFault(见 fault_blink)
+ *      LED_HEART 心跳: 主循环活着就一直闪(不依赖 SysTick)
+ *      LED_RUN   循迹中常亮
+ *
+ * 现在把两个【最关键的诊断灯】都放在 PB21 上 —— 因为用户实测 PB2 那个不亮。
+ * (注意 LED_BOOT 和 LED_FAULT 用同一个没关系: 开机那几下闪完之后,
+ *  正常运行时才可能进异常处理, 两者不会同时出现。) */
+#define LED_BOOT    0
+#define LED_FAULT   0
+#define LED_HEART   1
+#define LED_RUN     2
+
+/* boot_mark 跑在 SYSCFG_DL_init() 之前, 不能用 led_on(), 只能用裸的
+ * IOMUX/PIN 宏, 所以这里按 LED_BOOT 的值把两个宏选出来。 */
+#if   (LED_BOOT == 0)
+#define LED_BOOT_PIN     led_LED0_PIN
+#define LED_BOOT_IOMUX   led_LED0_IOMUX
+#elif (LED_BOOT == 1)
+#define LED_BOOT_PIN     led_LED1_PIN
+#define LED_BOOT_IOMUX   led_LED1_IOMUX
+#else
+#define LED_BOOT_PIN     led_LED2_PIN
+#define LED_BOOT_IOMUX   led_LED2_IOMUX
+#endif
+
 /* ---------- 时间节拍 ---------- */
 #define STEP_MS     10U         /* 循迹控制周期 */
 #define DISP_MS     100U        /* 屏幕刷新周期 */
@@ -323,9 +355,9 @@ static void fault_blink(uint8_t times)
     {
         for (i = 0U; i < times; i++)
         {
-            led_on(1);
+            led_on(LED_FAULT);
             delay_ms(60U);
-            led_off(1);
+            led_off(LED_FAULT);
             delay_ms(60U);
         }
         delay_ms(700U);         /* 组间长停, 方便数闪了几下 */
@@ -375,14 +407,14 @@ static void boot_mark(uint8_t times)
 {
     uint8_t i;
 
-    DL_GPIO_initDigitalOutput(led_LED1_IOMUX);          /* PB2 = LED1 */
-    DL_GPIO_enableOutput(led_PORT, led_LED1_PIN);
+    DL_GPIO_initDigitalOutput(LED_BOOT_IOMUX);          /* 由 LED_BOOT 决定是哪个 */
+    DL_GPIO_enableOutput(led_PORT, LED_BOOT_PIN);
 
     for (i = 0U; i < times; i++)
     {
-        DL_GPIO_setPins(led_PORT, led_LED1_PIN);        /* 亮 */
+        DL_GPIO_setPins(led_PORT, LED_BOOT_PIN);        /* 亮 */
         delay_ms(150U);
-        DL_GPIO_clearPins(led_PORT, led_LED1_PIN);      /* 灭 */
+        DL_GPIO_clearPins(led_PORT, LED_BOOT_PIN);      /* 灭 */
         delay_ms(150U);
     }
     delay_ms(500U);                                     /* 组间长停, 好数 */
@@ -436,8 +468,8 @@ int main(void)
     DBG_MSG("S=00011000 AD=111 E=-014 L=040 R=040\r\n");
     DBG_MSG("K1=follow on/off   K2=motor test\r\n");
 
-    led_off(1);
-    led_off(2);
+    led_off(LED_RUN);
+    led_off(LED_HEART);
 
     show_status();
 
@@ -461,8 +493,8 @@ int main(void)
         if (s_hb >= HB_LOOPS)
         {
             s_hb = 0U;
-            if (s_hb_state == 0U) { s_hb_state = 1U; led_on(2); }
-            else                  { s_hb_state = 0U; led_off(2); }
+            if (s_hb_state == 0U) { s_hb_state = 1U; led_on(LED_HEART); }
+            else                  { s_hb_state = 0U; led_off(LED_HEART); }
         }
 
         /* ---------------- KEY1: 循迹 开/关 ---------------- */
@@ -512,9 +544,9 @@ int main(void)
         }
 
         if (line_follow_is_running()) {
-            led_on(1);
+            led_on(LED_RUN);
         } else {
-            led_off(1);
+            led_off(LED_RUN);
         }
     }
 }

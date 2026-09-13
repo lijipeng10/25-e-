@@ -28,12 +28,19 @@
 | **电机 A 路** | PWM = PB6, AIN1 = PB17, AIN2 = PB18 | TB6612 |
 | **电机 B 路** | PWM = PB7, BIN1 = PB19, BIN2 = PB23 | TB6612 |
 | **电机 STBY** | PA16 | 高 = 使能 |
-| **LED1** | PB2 | 正常: 循迹中亮。异常: 被故障处理占用, 快闪 = 死机 |
-| **LED2** | PB3 | 心跳: 主循环每转 HB_LOOPS 圈翻转一次, 一直在闪 |
+| **LED0** | PB21 | 开机进度 + 死机指示 (`LED_BOOT` / `LED_FAULT`) |
+| **LED1** | PB2 | 心跳: 主循环每转 HB_LOOPS 圈翻转一次 (`LED_HEART`) |
+| **LED2** | PB3 | 循迹中常亮 (`LED_RUN`) |
+
+> 用哪个 LED 由 `empty.c` 顶部的 `LED_BOOT / LED_FAULT / LED_HEART / LED_RUN`
+> 四个宏决定, 哪个不亮改那个数字(0 = PB21, 1 = PB2, 2 = PB3)即可。
 | **灰度传感器** | OUT = PA22, AD0 = PB24, AD1 = PA24, AD2 = PA26 | 8 路循迹 |
 | **MPU6050** | I2C0: SDA = PA0, SCL = PA1 | 陀螺仪(航向) |
 | **OLED** | SPI1: SCLK = PB9, MOSI = PB8 | 1.3 寸 128x64 SH1106, 7 针 |
 | | GPIO: RES = PB10, DC = PB11, CS = PB14, BLK = PB26 | |
+| | **SPI 只设为 `PICO`(只发)** | OLED 是单向写的, MISO 用不上。 |
+| | 不设成 PICO 的话 SysConfig 必须给 MISO 分配引脚, |
+| | 而 SPI1 的 MISO 唯一能用的就是 PB21, 会把 PB21 占掉。 |
 | **蜂鸣器** | PB0 | |
 | **PC 调试串口** | UART2: TX = PB15, RX = PB16, 115200 | |
 

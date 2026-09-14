@@ -13,6 +13,12 @@
 #include "delay.h"
 
 #define MPU_ADDR          0x68      /* AD0=0 -> 0x68; AD0=1 -> 0x69 */
+#define MPU_ADDR_ALT      0x69      /* AD0=1 时的地址。ping 会两个都试 */
+
+/* ★ 实际使用的从机地址。默认 0x68, ping 成功后可能被改成 0x69 ——
+ *   很多 MPU6050 模块的 AD0 是悬空/拉高的, 地址其实是 0x69,
+ *   只试 0x68 会把"接得好好的传感器"误判成没接。 */
+static uint8_t s_addr = MPU_ADDR;
 #define MPU_REG_CONFIG    0x1A
 #define MPU_REG_GYROCFG   0x1B
 #define MPU_REG_GYRO_Z    0x47
@@ -43,7 +49,7 @@ static int i2c_write_reg(uint8_t reg, uint8_t val)
         if (--guard == 0U) return -1;
     }
     DL_I2C_fillControllerTXFIFO(MPU6050_INST, buf, 2U);
-    DL_I2C_startControllerTransfer(MPU6050_INST, MPU_ADDR,
+    DL_I2C_startControllerTransfer(MPU6050_INST, s_addr,
                                    DL_I2C_CONTROLLER_DIRECTION_TX, 2U);
     guard = 200000U;
     while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY) {
@@ -66,7 +72,7 @@ static int i2c_read_reg(uint8_t reg, uint8_t *buf, uint16_t len)
 
     /* 阶段1: 寄存器地址, START 但不停 */
     DL_I2C_fillControllerTXFIFO(MPU6050_INST, &reg, 1U);
-    DL_I2C_startControllerTransferAdvanced(MPU6050_INST, MPU_ADDR,
+    DL_I2C_startControllerTransferAdvanced(MPU6050_INST, s_addr,
         DL_I2C_CONTROLLER_DIRECTION_TX, 1U,
         DL_I2C_CONTROLLER_START_ENABLE, DL_I2C_CONTROLLER_STOP_DISABLE,
         DL_I2C_CONTROLLER_ACK_DISABLE);
@@ -77,7 +83,7 @@ static int i2c_read_reg(uint8_t reg, uint8_t *buf, uint16_t len)
     if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR) return -1;
 
     /* 阶段2: 重复起始 + 读 len 字节 + STOP */
-    DL_I2C_startControllerTransferAdvanced(MPU6050_INST, MPU_ADDR,
+    DL_I2C_startControllerTransferAdvanced(MPU6050_INST, s_addr,
         DL_I2C_CONTROLLER_DIRECTION_RX, len,
         DL_I2C_CONTROLLER_START_ENABLE, DL_I2C_CONTROLLER_STOP_ENABLE,
         DL_I2C_CONTROLLER_ACK_DISABLE);
@@ -182,11 +188,24 @@ int16_t mpu6050_get_rate_x10(void)
  *
  *  返回: 1 = 在, 0 = 不在
  * -------------------------------------------------------------------------*/
-int mpu6050_ping(void)
+uint8_t mpu6050_ping(void)
 {
     uint8_t b = 0U;
+    uint8_t a;
 
-    if (i2c_read_reg(MPU_REG_WHOAMI, &b, 1U) != 0) { return 0; }
-    if ((b == 0x00U) || (b == 0xFFU)) { return 0; }
-    return 1;
+    /* ★ 两个地址都试一遍: 0x68(AD0=0) 和 0x69(AD0=1)。
+     *   很多模块的 AD0 悬空或拉高, 实际地址就是 0x69 ——
+     *   只试 0x68 会把接得好好的传感器误判成"没接"。 */
+    for (a = MPU_ADDR; a <= MPU_ADDR_ALT; a++) {
+        s_addr = a;
+        if (i2c_read_reg(MPU_REG_WHOAMI, &b, 1U) == 0) {
+            /* 应答了(有 ACK), 而且不是全 0/全 1(排除总线悬空) */
+            if ((b != 0x00U) && (b != 0xFFU)) {
+                return a;               /* 就用这个地址 */
+            }
+        }
+    }
+
+    s_addr = MPU_ADDR;                  /* 都没找到, 复位成默认 */
+    return 0U;
 }

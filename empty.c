@@ -160,6 +160,11 @@ static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关(0 = 关) */
 static const uint8_t k_test_levels[] = { 0U, 10U, 12U, 14U, 16U, 18U, 20U };
 static uint8_t s_test_idx = 0U;     /* 当前在第几档 */
 
+/* MPU6050 探测结果: 1 = 找到了, 0 = 没找到(或没接)。
+ * ★ 为什么不看串口: 用户要求不依赖串口, 所以这个结果直接画在参数页上,
+ *   开机 4 秒那一屏就能看到 "MPU:OK" 还是 "MPU:NO"。 */
+static uint8_t s_mpu_ok = 0U;
+
 /* ---------- 心跳 ----------
  * 主循环每转一圈 s_hb 加 1, 加够了就翻转 LED2。
  * 关键: 它【不依赖 SysTick, 也不依赖任何定时器和中断】, 纯靠 CPU 转圈。
@@ -434,6 +439,9 @@ static void show_params(void)
     if (t < 0) { t = (int16_t)(-t); }
     OLED_ShowNum(42, 52, (u32)t, 2, 12);
 
+    /* 陀螺仪到底在不在 —— 画在屏幕上, 不用看串口 */
+    OLED_ShowString(66, 52, (u8 *)((s_mpu_ok != 0U) ? "MPU:OK" : "MPU:NO"), 12);
+
     OLED_Refresh();
 }
 
@@ -515,14 +523,12 @@ int main(void)
      *   超时, 合计十几秒 —— 看起来就像死机。ping 只读一次(最坏 30ms)。
      * ★ 标定期间【车必须静止】(约 400ms), 所以这一步放在开机、电机还没转的时候。
      *   如果标定时车在动, 零偏会不准, 航向/角速度都会偏。 */
-    if (mpu6050_ping() != 0) {
-        DBG_MSG("[4] MPU6050 found, calibrating (keep the car STILL)...\r\n");
-        mpu6050_init();
-        DBG_MSG("[4] MPU6050 OK\r\n");
-    } else {
-        /* 没接也不影响: 角速度恒为 0, 阻尼项自然失效, 其他功能照常 */
-        DBG_MSG("[4] MPU6050 NOT found -> gyro damping disabled\r\n");
+    s_mpu_ok = (uint8_t)mpu6050_ping();
+    if (s_mpu_ok != 0U) {
+        mpu6050_init();     /* 标定约 400ms, 期间车必须静止 */
     }
+    /* 没接也不影响: 角速度恒为 0, 阻尼项自然失效, 其他功能照常。
+     * 结果会在参数页上显示成 MPU:OK / MPU:NO, 不用看串口。 */
 
     /* ======================= 2. 开机画面: 参数页 =======================
      * 开机先把【这一版固件的所有可调参数】画出来, 停 4 秒, 然后自动进状态页。

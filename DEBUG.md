@@ -212,9 +212,45 @@ while (SYSCFG_DL_SYSCTL_SYSPLL_init() == false) { ... }     // 等 PLL 锁定
 最后那句 **TI 自己在注释里就写了**：
 *This can lead an infinite loop ... and can block entry to the application code.*
 
-原来的时钟链是 `HFXT(外部晶振) -> SYSPLL -> MCLK(80MHz)`。**晶振起振天生是概率性的**
-（虚焊 / 负载电容不对 / 温度 / 板子受力），一次没起振就永远卡住 ——
-**跟供电质量无关，按复位也没用**。
+原来的时钟链是 `HFXT(外部晶振) -> SYSPLL -> MCLK(80MHz)`。
+
+#### 为什么是「时好时坏」—— 判据其实非常严
+
+生成的 `ti_msp_dl_config.h` 里有这几个常量：
+
+```c
+#define FLOAT_TO_INT_SCALE      (1000U)
+#define FCC_EXPECTED_RATIO     2000
+#define FCC_UPPER_BOUND        (FCC_EXPECTED_RATIO * (1 + 0.003))   // 2006
+#define FCC_LOWER_BOUND        (FCC_EXPECTED_RATIO * (1 - 0.003))   // 1994
+```
+
+开机时会拿 **LFCLK 当尺子**，分别量出 SYSPLL 输出和 HFXT 的频率，算比值，然后：
+
+```c
+if ((FCC_LOWER_BOUND < fFCCRatio) && (fFCCRatio < FCC_UPPER_BOUND))
+    fFCCRatioStatus = true;      // 只有落进窗口才认为「PLL 锁对了」
+```
+
+期望比值是 **2.000**（SYSPLLCLK0 = 80MHz，HFXT = 40MHz），**窗口只有 ±0.3%**。于是：
+
+| 这次开机 | 比值 | 结果 |
+| --- | --- | --- |
+| 晶振正常起振 | ≈ 2.000，落进窗口 | ✅ 启动成功 |
+| 晶振**没起振** | 量出来是垃圾值，出界 | ❌ 进重试循环 → **永远卡住** |
+| 晶振起振到**错误频率** | 比值不对 | ❌ 永远卡住 |
+
+复位后会重来一次，所以表现为「复位键没用 + 时好时坏」。
+
+**外部晶振可能出的三种问题**（想确认的话看 PA5 / PA6 附近有没有晶振）：
+
+1. 板上**根本没焊晶振**（最小系统板常见）—— 但这样应该从来没成功过
+2. 晶振**起振边际**（负载电容不匹配 / ESR 偏高 / 虚焊 / 温度漂移）
+   —— **概率性成功，最符合「偶尔能起来」**
+3. 晶振**频率和配置不符**（板上是 16/24/8MHz，SysConfig 写 40MHz）—— 永远失败
+
+> ⚠️ 注意：**40MHz 本身没有超规格**（MSPM0G 的 HFXT 支持到 48MHz）。
+> 问题出在晶振有没有起振，不是频率设得太高。
 
 **修复做法**：在 `empty.syscfg` 里把时钟源换成芯片内部的 SYSOSC：
 
@@ -255,6 +291,9 @@ DL_SYSCTL_disableHFXT();
 
 > 正式板子到了、确认晶振稳定之后，也可以把 `HSCLKMUX` 改回 `SYSPLL0`
 > 换回 80MHz —— 但**没有必要**，32MHz 对本项目完全够用。
+>
+> ✅ **实测确认（已修复）**：换 SYSOSC 之后，重上电和按复位都能稳定启动，
+> 不再出现 OLED 全黑 / 串口没有 `[1]` / 烧录时好时坏的现象。
 
 ### 4.5 串口里写死的「样板数据」会骗人
 

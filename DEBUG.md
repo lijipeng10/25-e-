@@ -190,9 +190,18 @@ error: OLED(/ti/driverlib/SPI) peripheral.misoPin: Resource conflict
 
 **结论：不要用「驱动某个输出脚、再读回来验证」的办法做自检。**
 
-### 4.4 开机时钟初始化有三处「没有超时」的死等
+### 4.4 开机时钟初始化有三处「没有超时」的死等 —— ✅ 已修复
 
-`Debug/ti_msp_dl_config.c`（SysConfig 生成）里有：
+**症状**（实测出现过）：
+
+| 现象 | 说明 |
+| --- | --- |
+| OLED 全黑、串口不出 `[1]` | 卡在 `SYSCFG_DL_init()` 里，GPIO / SPI 都还没配置 |
+| **时好时坏**，偶尔能跑起来 | 晶振起振是概率性的，那次恰好起来了 |
+| 复位 / 重上电又卡死 | 复位后跑到同一行，再卡一次 |
+| **连烧录都连不上** | 芯片卡在里面，调试口也进不去 |
+
+**原因**：`Debug/ti_msp_dl_config.c`（SysConfig 生成）里有：
 
 ```c
 while (DL_SYSCTL_isFCCDone() == 0) { }                      // 测 SYSPLLCLK0 频率
@@ -203,12 +212,49 @@ while (SYSCFG_DL_SYSCTL_SYSPLL_init() == false) { ... }     // 等 PLL 锁定
 最后那句 **TI 自己在注释里就写了**：
 *This can lead an infinite loop ... and can block entry to the application code.*
 
-时钟链是 `HFXT(外部晶振) -> SYSPLL -> MCLK(80MHz)`。**晶振起振天生是概率性的**
-（虚焊 / 负载电容不对 / 温度 / 板子受力），一旦某次没起振就会**永远卡住** ——
-**跟供电质量无关，按复位也没用**（复位后又卡在同一行）。
+原来的时钟链是 `HFXT(外部晶振) -> SYSPLL -> MCLK(80MHz)`。**晶振起振天生是概率性的**
+（虚焊 / 负载电容不对 / 温度 / 板子受力），一次没起振就永远卡住 ——
+**跟供电质量无关，按复位也没用**。
 
-**目前状态**：`[1]` 能稳定打印，说明这一条**没有复现**。
-如果以后重现，修法是**把时钟源换成芯片内部的 SYSOSC**，那条链上的三处死等会整个消失。
+**修复做法**：在 `empty.syscfg` 里把时钟源换成芯片内部的 SYSOSC：
+
+```js
+const mux8       = system.clockTree["HSCLKMUX"];
+mux8.inputSelect = "HSCLKMUX_SYSOSC";      // 原来: "HSCLKMUX_SYSPLL0"
+
+const pinFunction4  = system.clockTree["HFXT"];
+pinFunction4.enable = false;               // 原来: true
+```
+
+> ⚠️ 关掉 HFXT 之后，文件底部那两行建议分配
+> `pinFunction4.peripheral.hfxInPin.$suggestSolution` / `...hfxOutPin...`
+> **必须一起删掉**，否则 SysConfig 报
+> `Cannot read properties of undefined (reading hfxInPin)`。
+>
+> 另外 `UDIV`（ULPCLK 分频）在从 SYSOSC 取时钟时会被忽略，设了会报
+> `UDIV will be disabled (/1)...` 警告 —— 不设即可。
+
+**修复后**：`SYSCFG_DL_SYSCTL_init()` 只剩两行，**三处死等整个消失**：
+
+```c
+DL_SYSCTL_setSYSOSCFreq(DL_SYSCTL_SYSOSC_FREQ_BASE);
+DL_SYSCTL_disableHFXT();
+```
+
+**主频变化 80MHz → 32MHz，连带影响（都已由 SysConfig 自动重算并核对过）**：
+
+| 项目 | 改前 | 改后 | 需不需要手改代码 |
+| --- | --- | --- | --- |
+| `CPUCLK_FREQ` | 80000000 | 32000000 | 不用，`delay.c` / `tick.c` 用的就是这个宏 |
+| 电机 PWM | 20kHz | **16kHz** | 不用，`period` 仍是 1000，`MOTOR_PWM_PERIOD` 不用动 |
+| 按键扫描定时器 | 50ms | 50ms | 不用 |
+| OLED SPI 位率 | 8MHz | 自动重算 | 不用 |
+
+> 结论：**占空比是比值，和频率无关**，所以 PWM 频率变了不影响控制；
+> 16kHz 仍然远高于音频段、远低于 TB6612 上限。
+
+> 正式板子到了、确认晶振稳定之后，也可以把 `HSCLKMUX` 改回 `SYSPLL0`
+> 换回 80MHz —— 但**没有必要**，32MHz 对本项目完全够用。
 
 ### 4.5 串口里写死的「样板数据」会骗人
 

@@ -38,8 +38,9 @@ const UART2   = UART.addInstance();
 /**
  * Write custom configuration values to the imported modules.
  */
-const divider9       = system.clockTree["UDIV"];
-divider9.divideValue = 2;
+/* 注意: ULPCLK 分频(UDIV)这里不设 —— 从 SYSOSC 取时钟时 UDIV 会被忽略,
+ * 设了反而报 "UDIV will be disabled (/1)" 警告。不设就是 /1,
+ * 于是 ULPCLK = MCLK = 32MHz, 外设时钟够用。 */
 
 const multiplier2         = system.clockTree["PLL_QDIV"];
 multiplier2.multiplyValue = 4;
@@ -47,16 +48,30 @@ multiplier2.multiplyValue = 4;
 const mux4       = system.clockTree["EXHFMUX"];
 mux4.inputSelect = "EXHFMUX_XTAL";
 
+/* ★★ 时钟源改成芯片内部的 SYSOSC, 不再用外部晶振 + PLL ★★
+ *
+ * 为什么必须改(实测踩坑):
+ *   原来 HSCLKMUX 选的是 SYSPLL0, 而 PLL 的参考是 HFXT(外部晶振)。
+ *   开机时 ti_msp_dl_config.c 里为了"确认 PLL 锁对了"会做两次频率测量和一次
+ *   等 PLL 锁定, 这三处【都没有超时】。晶振起振是概率性的(虚焊/负载电容/温度/
+ *   板子受力都会影响), 一次没起振就永远卡在那里 ——
+ *   表现为: 上电 OLED 全黑 / 串口不出 [1] / 复位也没用(复位后又卡在同一行),
+ *   而且【时好时坏】。
+ *
+ * 改成 SYSOSC 之后: 不需要外部晶振、不需要 PLL,
+ * 那三处死等【整段消失】, 这个故障模式从根上没有了。
+ *
+ * 代价: 主频从 80MHz 降到 32MHz。对本项目完全够用
+ *      (电机 PWM 20kHz、OLED SPI 8MHz 都绰绰有余),
+ *      而且 delay.c / tick.c 用的是 SysConfig 生成的 CPUCLK_FREQ 宏, 会自动跟着变。
+ *
+ * 后备方案: 正式板子到了、确认晶振稳定之后, 也可以改回 SYSPLL0。 */
 const mux8       = system.clockTree["HSCLKMUX"];
-mux8.inputSelect = "HSCLKMUX_SYSPLL0";
+mux8.inputSelect = "HSCLKMUX_SYSOSC";
 
-const mux12       = system.clockTree["SYSPLLMUX"];
-mux12.inputSelect = "zSYSPLLMUX_HFCLK";
-
+/* HFXT(外部高频晶振) 直接关掉 —— 不再需要它 */
 const pinFunction4              = system.clockTree["HFXT"];
-pinFunction4.inputFreq          = 40;
-pinFunction4.enable             = true;
-pinFunction4.peripheral.$assign = "SYSCTL";
+pinFunction4.enable             = false;
 
 GPIO1.$name                         = "sm_motor";
 GPIO1.associatedPins.create(4);
@@ -311,8 +326,8 @@ UART2.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric7";
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
  * re-solve from scratch.
  */
-pinFunction4.peripheral.hfxInPin.$suggestSolution  = "PA5";
-pinFunction4.peripheral.hfxOutPin.$suggestSolution = "PA6";
+/* (HFXT 已关掉, 这两行建议分配必须删掉 —— 留着会报
+ *  "Cannot read properties of undefined (reading hfxInPin)") */
 Board.peripheral.$suggestSolution                  = "DEBUGSS";
 Board.peripheral.swclkPin.$suggestSolution         = "PA20";
 Board.peripheral.swdioPin.$suggestSolution         = "PA19";

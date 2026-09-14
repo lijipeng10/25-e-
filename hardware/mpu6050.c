@@ -25,6 +25,13 @@ static int32_t  s_yaw_x10;
 static uint32_t s_last_ms;
 static float    s_gyro_bias;        /* 零偏(LSB) */
 
+/* ★ 最近一次的 Z 轴角速度, 单位 0.1 度/秒(带符号, 右转为正)。
+ * 和积分出来的航向角是两回事:
+ *    航向角   = "现在车头朝哪"(积分值, 会漂)
+ *    角速度   = "车头正在以多快的速度转"(瞬时值, 不漂)
+ * 循迹的【阻尼项】要的是角速度 —— 见 line_follow.c 里 LF_GYRO_KD 的说明。 */
+static int16_t  s_rate_x10;
+
 /* ---- 底层: 写寄存器(单次 START+STOP) ---- */
 static int i2c_write_reg(uint8_t reg, uint8_t val)
 {
@@ -131,6 +138,9 @@ void mpu6050_update(void)
     raw = (int16_t)(((uint16_t)b[0] << 8) | b[1]);
     dps = ((float)raw - s_gyro_bias) / GYRO_LSB_PER_DPS;   /* 度/秒 */
 
+    /* 记下瞬时角速度(0.1 度/秒) —— 循迹的阻尼项要用它 */
+    s_rate_x10 = (int16_t)(dps * 10.0f);
+
     now = tick_get_ms();
     if (s_last_ms == 0U) { s_last_ms = now; return; }
 
@@ -153,4 +163,30 @@ int32_t mpu6050_get_yaw_x10(void)
 void mpu6050_zero_yaw(void)
 {
     s_yaw_x10 = 0;
+}
+
+int16_t mpu6050_get_rate_x10(void)
+{
+    return s_rate_x10;
+}
+
+/* ---------------------------------------------------------------------------
+ *  探测传感器在不在。
+ *
+ *  为什么需要它: mpu6050_init() 里的零偏标定要做 200 次读取。如果传感器没接,
+ *  每次都失败并等满超时(约 30ms), 200 次就是【十几秒】—— 开机会卡在那儿,
+ *  看起来就像"死机"。先 ping 一下(一次读取, 最坏 30ms)就能避开。
+ *
+ *  判据: I2C 读到 WHO_AM_I 不超时(说明有器件应答), 而且值既不是全 0 也不是
+ *        全 1(排除总线悬空)。不强制等于 0x68, 因为兼容芯片返回值可能不同。
+ *
+ *  返回: 1 = 在, 0 = 不在
+ * -------------------------------------------------------------------------*/
+int mpu6050_ping(void)
+{
+    uint8_t b = 0U;
+
+    if (i2c_read_reg(MPU_REG_WHOAMI, &b, 1U) != 0) { return 0; }
+    if ((b == 0x00U) || (b == 0xFFU)) { return 0; }
+    return 1;
 }

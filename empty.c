@@ -113,6 +113,7 @@
 #include "led.h"                /* led_on / led_off */
 #include "grayscale_sensor.h"   /* Grayscale_Sensor_Init / GRAYSCALE_SENSOR_CHANNELS */
 #include "oled.h"               /* OLED_Init / OLED_ShowString / OLED_Refresh */
+#include "mpu6050.h"            /* mpu6050_ping / init / update / get_rate_x10 */
 
 /* ---- 循迹控制 ---- */
 #include "line_follow.h"
@@ -350,6 +351,13 @@ static void show_status(void)
     OLED_ShowString(0, 28, (u8 *)"E:", 12);
     show_signed3(12, 28, line_follow_get_error(), 12);
 
+    /* ★ 陀螺仪角速度(度/秒, 带符号)。
+     *   两个用途:
+     *     1) 调 LF_GYRO_KD 的【符号】—— 用手把车头往左转, 看 R 是正还是负
+     *     2) 平时看摆尾有多猛: 摆动时这个数会在正负之间甩得很大 */
+    OLED_ShowString(60, 28, (u8 *)"R:", 12);
+    show_signed3(72, 28, (int16_t)(mpu6050_get_rate_x10() / 10), 12);
+
     OLED_ShowString(0, 40, (u8 *)"L:", 12);
     OLED_ShowNum(12, 40, line_follow_get_left_duty(), 3, 12);
     OLED_ShowString(36, 40, (u8 *)"R:", 12);
@@ -395,30 +403,36 @@ static void show_params(void)
     line_follow_get_params(p);
 
     OLED_Clear();
-    OLED_ShowString(0, 0, (u8 *)"PARAM", 16);
+    OLED_ShowString(0, 0, (u8 *)"BASE", 12);
+    OLED_ShowNum(36, 0, p[LF_P_BASE], 2, 12);
+    OLED_ShowString(66, 0, (u8 *)"ST", 12);
+    OLED_ShowNum(102, 0, p[LF_P_STEER], 2, 12);
 
-    OLED_ShowString(0, 16, (u8 *)"BASE", 12);
-    OLED_ShowNum(36, 16, p[LF_P_BASE], 2, 12);
-    OLED_ShowString(66, 16, (u8 *)"ST", 12);
-    OLED_ShowNum(96, 16, p[LF_P_STEER], 2, 12);
+    OLED_ShowString(0, 13, (u8 *)"KP", 12);
+    OLED_ShowNum(36, 13, p[LF_P_KP], 2, 12);
+    OLED_ShowString(66, 13, (u8 *)"DB", 12);
+    OLED_ShowNum(102, 13, p[LF_P_DEADBAND], 2, 12);
 
-    OLED_ShowString(0, 28, (u8 *)"KP", 12);
-    OLED_ShowNum(36, 28, p[LF_P_KP], 2, 12);
-    OLED_ShowString(66, 28, (u8 *)"DB", 12);
-    OLED_ShowNum(96, 28, p[LF_P_DEADBAND], 2, 12);
-
-    OLED_ShowString(0, 40, (u8 *)"TRIM", 12);
+    OLED_ShowString(0, 26, (u8 *)"TRIM", 12);
     t = (int16_t)p[LF_P_TRIM];              /* 可能是负数, 要带符号画 */
-    OLED_ShowChar(36, 40, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    OLED_ShowChar(36, 26, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
     if (t < 0) { t = (int16_t)(-t); }
-    OLED_ShowNum(42, 40, (u32)t, 2, 12);
-    OLED_ShowString(66, 40, (u8 *)"CNR", 12);       /* 急弯判据: 过弯冲过头的关键 */
-    OLED_ShowNum(102, 40, p[LF_P_CORNER], 2, 12);
+    OLED_ShowNum(42, 26, (u32)t, 2, 12);
+    OLED_ShowString(66, 26, (u8 *)"CNR", 12);       /* 急弯判据: 过弯冲过头的关键 */
+    OLED_ShowNum(102, 26, p[LF_P_CORNER], 2, 12);
 
-    OLED_ShowString(0, 52, (u8 *)"PIV", 12);
-    OLED_ShowNum(36, 52, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
-    OLED_ShowString(66, 52, (u8 *)"PD", 12);
-    OLED_ShowNum(96, 52, p[LF_P_PIV_DUTY], 2, 12);
+    OLED_ShowString(0, 39, (u8 *)"PIV", 12);
+    OLED_ShowNum(36, 39, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
+    OLED_ShowString(66, 39, (u8 *)"PD", 12);
+    OLED_ShowNum(102, 39, p[LF_P_PIV_DUTY], 2, 12);
+
+    /* 陀螺仪阻尼(带符号, 治左右摆尾)。符号怎么定见 line_follow.c 的说明:
+     * 用手把车头往左转, 看状态页 R: 是正还是负。 */
+    OLED_ShowString(0, 52, (u8 *)"GY", 12);
+    t = (int16_t)p[LF_P_GYRO];
+    OLED_ShowChar(36, 52, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    if (t < 0) { t = (int16_t)(-t); }
+    OLED_ShowNum(42, 52, (u32)t, 2, 12);
 
     OLED_Refresh();
 }
@@ -495,7 +509,20 @@ int main(void)
     line_follow_init();
     DBG_MSG("[3] line_follow OK -> entering main loop\r\n");
 
-    /* 故意不初始化 MPU6050: 本阶段不用, 而且它的 I2C 读没有超时保护 */
+    /* ======================= 3. 陀螺仪(用于循迹的阻尼项) =======================
+     * ★ 顺序很重要: 先 ping 再 init。
+     *   mpu6050_init() 里的零偏标定要做 200 次读取, 传感器没接的话每次都等满
+     *   超时, 合计十几秒 —— 看起来就像死机。ping 只读一次(最坏 30ms)。
+     * ★ 标定期间【车必须静止】(约 400ms), 所以这一步放在开机、电机还没转的时候。
+     *   如果标定时车在动, 零偏会不准, 航向/角速度都会偏。 */
+    if (mpu6050_ping() != 0) {
+        DBG_MSG("[4] MPU6050 found, calibrating (keep the car STILL)...\r\n");
+        mpu6050_init();
+        DBG_MSG("[4] MPU6050 OK\r\n");
+    } else {
+        /* 没接也不影响: 角速度恒为 0, 阻尼项自然失效, 其他功能照常 */
+        DBG_MSG("[4] MPU6050 NOT found -> gyro damping disabled\r\n");
+    }
 
     /* ======================= 2. 开机画面: 参数页 =======================
      * 开机先把【这一版固件的所有可调参数】画出来, 停 4 秒, 然后自动进状态页。
@@ -591,6 +618,9 @@ int main(void)
         if ((now - last_step_ms) >= STEP_MS)
         {
             last_step_ms = now;
+            /* ★ 先更新陀螺仪再跑循迹: 阻尼项要用【这一拍】的角速度。
+             *   传感器没接时这个函数会直接返回, 开销极小。 */
+            mpu6050_update();
             line_follow_step();
         }
 

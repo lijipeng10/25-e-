@@ -697,3 +697,28 @@ int16_t line_follow_get_error(void)      { return s_error; }
 uint8_t line_follow_get_bits(void)       { return s_bits; }
 uint8_t line_follow_get_left_duty(void)  { return s_left_duty; }
 uint8_t line_follow_get_right_duty(void) { return s_right_duty; }
+
+/* ---------------------------------------------------------------------------
+ *  把当前所有可调参数一次性导出来, 给屏幕显示用(索引见 line_follow.h 的 LF_P_*)
+ *
+ *  为什么要把宏"读"出来: 这些值都是编译期常量, 屏幕上直接画出来,
+ *  就等于给这版固件做了个"参数铭牌" —— 调参反复改值烧录时,
+ *  一眼就能确认芯片里跑的到底是哪一组参数, 不用翻源码也不用串口。
+ *  ★ 以后加了新的可调宏, 记得在 line_follow.h 里加一个 LF_P_xxx 序号,
+ *    并在这里补一行, 否则屏幕上就看不到它。
+ * -------------------------------------------------------------------------*/
+void line_follow_get_params(uint16_t *out)
+{
+    if (out == 0) { return; }
+
+    out[LF_P_BASE]     = (uint16_t)LF_BASE_DUTY;
+    out[LF_P_STEER]    = (uint16_t)LF_MAX_STEER;
+    out[LF_P_KP]       = (uint16_t)LF_KP;
+    out[LF_P_DEADBAND] = (uint16_t)LF_DEADBAND;
+    out[LF_P_TRIM]     = (uint16_t)((int16_t)LF_TRIM);      /* 可能为负, 调用者按符号解释 */
+    out[LF_P_LOST]     = (uint16_t)LF_LOST_DUTY;
+    out[LF_P_MAX]      = (uint16_t)LF_MAX_DUTY;
+    out[LF_P_PIV_TRIG] = (uint16_t)LF_PIVOT_TRIGGER_MS;
+    out[LF_P_PIV_DUTY] = (uint16_t)LF_PIVOT_DUTY;
+    out[LF_P_PIV_OK]   = (uint16_t)LF_PIVOT_OK;
+}

@@ -123,7 +123,10 @@
  *    【不受这个开关影响, 永远都会打印】——
  *    它们的用处就是"下次出问题能立刻定位", 不能因为跑车就关掉。
  *    代价极小: 开机只多打 4 行。详见 DEBUG.md。 */
-#define DBG_UART    1
+/* ★ 现在改成 0: 调试信息全部走 OLED, 串口不再刷数据。
+ *   注意: 启动日志(=== BOOT === / [1][2][3]) 和故障报告(!!! HARDFAULT !!!)
+ *   【不受这个开关影响, 永远会打印】—— 它们排障要用, 见 DEBUG.md。 */
+#define DBG_UART    0
 
 /* ---------- 关于板上的 LED ----------
  * 现在用的是【最小系统板】, PB2 / PB3 / PB21 都没有接 LED, 所以一切诊断
@@ -347,6 +350,60 @@ static void show_status(void)
     OLED_Refresh();
 }
 
+/* ---------------------------------------------------------------------------
+ *  参数页: 把这一版固件的【所有可调参数】画在屏幕上
+ * ---------------------------------------------------------------------------
+ *  开机先显示它 4 秒, 然后自动进状态页。
+ *  这样不用翻源码、也不依赖串口, 一眼就能确认芯片里跑的到底是哪一组参数 ——
+ *  调参时反复改值烧录, 这个特别省事。
+ *  (嫌 4 秒太短就按一下复位再看一遍, 复位现在是可靠的)
+ *
+ *  布局(128x64):
+ *      y=0   16px  PARAM
+ *      y=16  12px  BASE xx      ST   xx
+ *      y=28  12px  KP   xx      DB   xx
+ *      y=40  12px  TRIM ±x      LOST xx
+ *      y=52  12px  PIV  xxx     PD   xx
+ *
+ *  想加参数: 在 line_follow.h 里加 LF_P_xxx 序号, line_follow.c 里补一行,
+ *            然后在这里画出来 —— 屏幕只剩这几行, 要腾地方就删旧的。
+ * -------------------------------------------------------------------------*/
+static void show_params(void)
+{
+    uint16_t p[LF_P_COUNT];
+    int16_t  t;
+
+    line_follow_get_params(p);
+
+    OLED_Clear();
+    OLED_ShowString(0, 0, (u8 *)"PARAM", 16);
+
+    OLED_ShowString(0, 16, (u8 *)"BASE", 12);
+    OLED_ShowNum(36, 16, p[LF_P_BASE], 2, 12);
+    OLED_ShowString(66, 16, (u8 *)"ST", 12);
+    OLED_ShowNum(96, 16, p[LF_P_STEER], 2, 12);
+
+    OLED_ShowString(0, 28, (u8 *)"KP", 12);
+    OLED_ShowNum(36, 28, p[LF_P_KP], 2, 12);
+    OLED_ShowString(66, 28, (u8 *)"DB", 12);
+    OLED_ShowNum(96, 28, p[LF_P_DEADBAND], 2, 12);
+
+    OLED_ShowString(0, 40, (u8 *)"TRIM", 12);
+    t = (int16_t)p[LF_P_TRIM];              /* 可能是负数, 要带符号画 */
+    OLED_ShowChar(36, 40, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    if (t < 0) { t = (int16_t)(-t); }
+    OLED_ShowNum(42, 40, (u32)t, 2, 12);
+    OLED_ShowString(66, 40, (u8 *)"LOST", 12);
+    OLED_ShowNum(102, 40, p[LF_P_LOST], 2, 12);
+
+    OLED_ShowString(0, 52, (u8 *)"PIV", 12);
+    OLED_ShowNum(36, 52, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
+    OLED_ShowString(66, 52, (u8 *)"PD", 12);
+    OLED_ShowNum(96, 52, p[LF_P_PIV_DUTY], 2, 12);
+
+    OLED_Refresh();
+}
+
 /* ============================================================================
  *  故障兜底 —— 让"死机"看得见(走串口 + OLED, 因为最小系统板上没有 LED)
  * ----------------------------------------------------------------------------
@@ -421,16 +478,12 @@ int main(void)
 
     /* 故意不初始化 MPU6050: 本阶段不用, 而且它的 I2C 读没有超时保护 */
 
-    /* ======================= 2. 开机画面 ======================= */
-    /* 开机画面: 只是告诉人"我起来了", 顺便给 OLED 一点稳定时间。
-     * (原来这里写的是 SENSOR DEBUG / UART2 PB15 / 115200 8N1,
-     *  那是传感器调试阶段的内容, 串口早就关了, 留着会误导人。) */
-    OLED_Clear();
-    OLED_ShowString(0,  0, (u8 *)"LINE FOLLOW", 16);
-    OLED_ShowString(0, 24, (u8 *)"K1 Run",      12);
-    OLED_ShowString(0, 40, (u8 *)"K2 Test",     12);
-    OLED_Refresh();
-    delay_ms(600);
+    /* ======================= 2. 开机画面: 参数页 =======================
+     * 开机先把【这一版固件的所有可调参数】画出来, 停 4 秒, 然后自动进状态页。
+     * 这样不用翻源码、不用串口, 一眼就知道芯片里跑的是哪一组参数。
+     * (原来这里显示的是 LINE FOLLOW / K1 Run / K2 Test, 信息量太低) */
+    show_params();
+    delay_ms(4000);
 
     OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
 

@@ -66,4 +66,25 @@ void line_follow_test_wheels(uint8_t duty);
 uint8_t line_follow_get_left_duty(void);
 uint8_t line_follow_get_right_duty(void);
 
+/* ---------- 把当前所有可调参数导出来, 给屏幕显示用 ----------
+ * 用法:
+ *      uint16_t p[LF_P_COUNT];
+ *      line_follow_get_params(p);
+ *      p[LF_P_BASE] 就是 LF_BASE_DUTY 当前的值 ...
+ *
+ * 目的: 屏幕上能直接看到「这版固件到底是按什么参数在跑」,
+ *       不用去翻源码、也不依赖串口。调参反复改值烧录时特别有用。 */
+#define LF_P_BASE        0      /* 基础速度 LF_BASE_DUTY */
+#define LF_P_STEER       1      /* 转向量上限 LF_MAX_STEER (= 转弯力度) */
+#define LF_P_KP          2      /* 转向比例 LF_KP */
+#define LF_P_DEADBAND    3      /* 误差死区 LF_DEADBAND */
+#define LF_P_TRIM        4      /* 左右电机补偿 LF_TRIM (带符号) */
+#define LF_P_LOST        5      /* 丢线找线速度 LF_LOST_DUTY */
+#define LF_P_MAX         6      /* 最高速度硬顶 LF_MAX_DUTY */
+#define LF_P_PIV_TRIG    7      /* 丢线多久判定到弯节点 LF_PIVOT_TRIGGER_MS */
+#define LF_P_PIV_DUTY    8      /* 原地转向占空比 LF_PIVOT_DUTY */
+#define LF_P_PIV_OK      9      /* 对准判据 LF_PIVOT_OK */
+#define LF_P_COUNT      10
+void line_follow_get_params(uint16_t *out);
+
 #endif /* LINE_FOLLOW_H */

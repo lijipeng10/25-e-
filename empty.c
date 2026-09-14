@@ -406,8 +406,8 @@ static void show_params(void)
     OLED_ShowChar(36, 40, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
     if (t < 0) { t = (int16_t)(-t); }
     OLED_ShowNum(42, 40, (u32)t, 2, 12);
-    OLED_ShowString(66, 40, (u8 *)"LOST", 12);
-    OLED_ShowNum(102, 40, p[LF_P_LOST], 2, 12);
+    OLED_ShowString(66, 40, (u8 *)"CNR", 12);       /* 急弯判据: 过弯冲过头的关键 */
+    OLED_ShowNum(102, 40, p[LF_P_CORNER], 2, 12);
 
     OLED_ShowString(0, 52, (u8 *)"PIV", 12);
     OLED_ShowNum(36, 52, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */

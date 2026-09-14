@@ -84,7 +84,8 @@ uint8_t line_follow_get_right_duty(void);
 #define LF_P_PIV_TRIG    7      /* 丢线多久判定到弯节点 LF_PIVOT_TRIGGER_MS */
 #define LF_P_PIV_DUTY    8      /* 原地转向占空比 LF_PIVOT_DUTY */
 #define LF_P_PIV_OK      9      /* 对准判据 LF_PIVOT_OK */
-#define LF_P_COUNT      10
+#define LF_P_CORNER     10      /* 急弯判据 LF_CORNER_ERR (= 过弯冲过头的关键参数) */
+#define LF_P_COUNT      11
 void line_follow_get_params(uint16_t *out);
 
 /* 本次运行期间 error 到过的最小 / 最大值(按 KEY1 启动时清零)。

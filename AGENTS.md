@@ -149,3 +149,11 @@ Planned -> Implemented -> Build Passed -> Host Verified -> HW Verified -> Accept
   ★ 但**务必确认生成本身没报错**：SysConfig 失败时编译会中途停住，
     表现为「代码改了但板子上还是旧固件」。`gmake` 会自动调用匹配版本的 SysConfig。
 - 改 `empty.syscfg` 的 `PWM3.timerCount` 时，记得同步 `hardware/motor.c` 的 `MOTOR_PWM_PERIOD`
+- ⚠️ **不要用 PowerShell 的 `Get-Content` / `Set-Content` 改本仓库的文本文件！**
+  PowerShell 5.1 的 `Get-Content` **默认按 ANSI(GBK) 解码**，会把 UTF-8 的中文
+  读成乱码，`Set-Content` 再把乱码写回去 —— **整个文件的注释就毁了**。
+  （实测踩过：`PROJECT.md` 被写坏过一次，只能 `git checkout` 重做）
+  真要处理就用显式编码：
+  `[IO.File]::ReadAllLines($p, [Text.Encoding]::UTF8)` +
+  `[IO.File]::WriteAllLines($p, $lines, (New-Object Text.UTF8Encoding($false)))`；
+  或者直接用编辑工具 —— **编辑工具是 UTF-8 安全的**。

@@ -378,3 +378,31 @@ OLED 有显示说明 GPIO 已配置完, 所以**不是** 5.6 说的那种开机�
 - [ ] 轮速编码器: 用空闲定时器 TIMG6/TIMG7 配 QEI 硬件解码(见 4.1)
 - [ ] 小车与云台耦合: 两套模块的 init 都加进 `empty.c`
 - [ ] 汉字字库: 现在 `oledfont.h` 里每个汉字表**只有「中」一个字**, 要显示别的字需自己取模
+
+---
+
+## 8. 能力地图
+
+> **这不是待办清单，是索引。** 写进来的必须是**已经存在、并且验证过入口**的能力。
+> 加新功能前先查这张表 —— 能复用就别新写。
+> 某个能力的接口或行为变了，**在同一次改动里更新对应行**。
+> 状态用 `AGENTS.md` 里的阶梯：`Implemented` / `Build Passed` / `HW Verified`。
+
+| 能力 | 实现 | 入口 | 约束 / 注意 | 状态 |
+| --- | --- | --- | --- | --- |
+| 启动 / 复位 | SysConfig `SYSCFG_DL_init()` | `empty.c` 的 `main()` | 时钟已换 SYSOSC（不用外部晶振）；启动日志 `[1][2][3]` 永远打印 | HW Verified |
+| 时钟 / 电源 | SYSOSC 32MHz，BUSCLK 32MHz | `empty.syscfg` 的 SYSCTL | 改时钟影响**所有**外设频率，必须逐个核对 | HW Verified |
+| GPIO | SysConfig 生成 | `ti_msp_dl_config.h` 的 `*_PORT/_PIN/_IOMUX` | **输出脚读不回来**（`INENA` 未置位，`DL_GPIO_readPins` 恒为 0） | HW Verified |
+| 定时器 / PWM | TIMG8 `motor_pwm` | `hardware/motor.c` | 16kHz；`MOTOR_PWM_PERIOD` 必须与 `timerCount` 同步 | HW Verified |
+| 时基 | SysTick 1ms | `system/tick.c` | 用 `CPUCLK_FREQ` 宏，改主频自动跟 | HW Verified |
+| 忙等延时 | 纯软件计数 | `system/delay.c` | 用 `CPUCLK_FREQ` 宏 | HW Verified |
+| 灰度传感器 | 8 路 + AD0/AD1/AD2 选通 | `hardware/grayscale_sensor.c` | **压黑线 = 1**；白底全 0 是正常的 | HW Verified |
+| 电机驱动 | TB6612 | `hardware/motor.c` | 换算 `(100-duty)*PERIOD/100`；**基础速度必须明显高于死区(实测 ≤10)** | HW Verified |
+| 按键 | TIMA0 50ms 扫描 | `hardware/key.c` | 定时器结构体必须 `= {0}` 初始化，否则中断不来 | HW Verified |
+| 显示 | SH1106 / SPI | `hardware/oled.c` | 列偏移**必须 = 2**；点阵 `bit0` 在上 | HW Verified |
+| PID | 通用位置式 | `system/pid.c` | 数字量误差上**微分项 D 没用**（放大的全是量化台阶） | HW Verified |
+| 循迹 | 灰度→误差→PID→差速 + 弯道停车转向 | `system/line_follow.c` | 参数全在文件顶部；有编译期检查兜错 | Build Passed（待赛道标定） |
+| 陀螺仪 | MPU6050 / I2C0 (PA0/PA1) | `hardware/mpu6050.c` | 地址自动 0x68/0x69；**必须先 `ping` 再 `init`**；`empty.syscfg` 里**必须有 `basicEnableController`** | Implemented（待烧录确认） |
+| 调试面板 | OLED 参数页 + 状态页 | `empty.c` | 参数页开机 4 秒；状态页含 `Emin/Emax`、`F` 摆动次数、`R` 角速度 | Build Passed |
+| 串口日志 | UART2 115200 8N1 | `empty.c` | 启动日志与故障报告**永远打印**；周期性数据受 `DBG_UART` 控制 | HW Verified |
+| 云台（保留不删） | 步进电机 / 视觉 | `hardware/sm_motor.c`、`system/vision.c` | **未接入主循环**，不要在没验证的情况下调用 | 未验证 |

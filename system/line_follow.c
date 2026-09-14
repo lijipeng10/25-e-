@@ -302,6 +302,18 @@ static uint8_t s_right_duty;        /* 最近一次右轮占空比(调试用) */
 static int8_t  s_last_dir;          /* 瞬时"上次往哪边拐"(只在丢线那几十毫秒用) */
 static uint16_t s_lost_ms;          /* 已经连续丢线多久(ms) */
 
+/* ★ 误差记录器: 记录【本次运行】期间 error 的最小/最大值。
+ *
+ * 为什么需要它: 现在调参只看 OLED, 但车在跑的时候根本没法盯屏幕,
+ * 而判断"摇摆"到底是超调还是别的, 恰恰要看误差摆幅有多大。
+ * 所以把一次运行里 error 到过的最小值和最大值记下来, 停下车再看屏幕:
+ *      Emin/Emax 都在 ±30 以内 -> 控制稳, 车基本贴着线
+ *      Emin/Emax 到 ±70 以上   -> 车已经甩到线的边上去了, 修正太晚/太弱
+ *      正负都很大且对称        -> 典型的来回超调(画龙), 该降 KP
+ * 每次按 KEY1 启动循迹时清零, 所以它反映的是"这一次跑得怎么样"。 */
+static int16_t  s_e_min;            /* 本次运行 error 的最小值 */
+static int16_t  s_e_max;            /* 本次运行 error 的最大值 */
+
 /* ★★ 方向证据 —— 决定弯道往哪边转 ★★
  *
  * 踩过的坑: 原来直接用 s_last_dir 定转向方向, 结果到弯道"算不出往哪边转"。
@@ -474,6 +486,8 @@ void line_follow_init(void)
     s_pivot_dir  = +1;
     s_pivot_try  = 0U;
     s_pivot_ms   = 0U;
+    s_e_min      = 0;
+    s_e_max      = 0;
 }
 
 void line_follow_start(void)
@@ -486,6 +500,8 @@ void line_follow_start(void)
     s_pivot_dir = +1;
     s_pivot_try = 0U;
     s_pivot_ms  = 0U;
+    s_e_min     = 0;        /* 误差记录器清零, 只记这一次运行 */
+    s_e_max     = 0;
     s_running   = 1U;
 }
 
@@ -530,6 +546,10 @@ void line_follow_step(void)
     if (s_running == 0U) {
         return;
     }
+
+    /* 记录本次运行的误差摆幅(见 s_e_min / s_e_max 的说明) */
+    if (error < s_e_min) { s_e_min = error; }
+    if (error > s_e_max) { s_e_max = error; }
 
     /* ================================================================
      *  状态 A: 正在原地转向(弯道模式)
@@ -697,6 +717,14 @@ int16_t line_follow_get_error(void)      { return s_error; }
 uint8_t line_follow_get_bits(void)       { return s_bits; }
 uint8_t line_follow_get_left_duty(void)  { return s_left_duty; }
 uint8_t line_follow_get_right_duty(void) { return s_right_duty; }
+
+/* 本次运行期间 error 到过的最小 / 最大值(没启动循迹时都是 0)。
+ * 用于判断"摇摆"有多严重, 详见 s_e_min / s_e_max 的说明。 */
+void line_follow_get_error_range(int16_t *mn, int16_t *mx)
+{
+    if (mn != 0) { *mn = s_e_min; }
+    if (mx != 0) { *mx = s_e_max; }
+}
 
 /* ---------------------------------------------------------------------------
  *  把当前所有可调参数一次性导出来, 给屏幕显示用(索引见 line_follow.h 的 LF_P_*)

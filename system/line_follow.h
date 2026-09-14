@@ -87,4 +87,8 @@ uint8_t line_follow_get_right_duty(void);
 #define LF_P_COUNT      10
 void line_follow_get_params(uint16_t *out);
 
+/* 本次运行期间 error 到过的最小 / 最大值(按 KEY1 启动时清零)。
+ * 车在跑的时候没法盯屏幕, 这个就是用来"停下车再回头看摆得多厉害"的。 */
+void line_follow_get_error_range(int16_t *mn, int16_t *mx);
+
 #endif /* LINE_FOLLOW_H */

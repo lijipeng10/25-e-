@@ -56,9 +56,11 @@ uint8_t line_follow_get_bits(void);
  * 标定传感器时看这个: 车压线时对应位变不变, 一眼就能判断极性对不对 */
 void line_follow_get_raw(uint16_t *out);
 
-/* 电机自检: on=1 -> 两个轮子都按"前进"方向转 50%; on=0 -> 停
- * 用来单独验证电机和接线(不经过循迹逻辑), 排查"某个轮子不转"时很好用 */
-void line_follow_test_wheels(uint8_t on);
+/* 电机自检: duty = 占空比 0~100, 传 0 = 停。
+ * 两个轮子用【相同的占空比 + 相同的前进方向】输出, 所以车如果拐弯,
+ * 唯一原因就是两个电机本身的差异 —— 用它量「电机启动死区」和调 LF_TRIM 都很方便。
+ * (empty.c 里 KEY2 会一档一档往上加占空比) */
+void line_follow_test_wheels(uint8_t duty);
 
 /* 最近一次左右轮实际输出了多少占空比(0~100) */
 uint8_t line_follow_get_left_duty(void);

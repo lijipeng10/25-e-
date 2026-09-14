@@ -72,7 +72,10 @@
 #define LF_LOST_DUTY        16      /* 丢线时的速度(降速找线)。
                                        同样不能低于死区! 否则丢线时一侧轮子
                                        直接停住, 车会原地打转, 比不减速更糟。 */
-#define LF_TEST_DUTY        20      /* 电机自检(KEY2)用的速度 */
+#define LF_TEST_DUTY        20      /* 电机自检的参考上限。
+                                       ★ 现在 KEY2 不再直接用这个值 ——
+                                       empty.c 里 KEY2 会一档一档升占空比
+                                       (0,10,12,...,20), 用来量电机启动死区。 */
 
 /* ---------- 轮子映射 ---------- */
 /* 电机编号: 1 = A路(PB17/PB18), 2 = B路(PB19/PB23) */
@@ -638,28 +641,33 @@ void line_follow_get_raw(uint16_t *out)
     }
 }
 
-void line_follow_test_wheels(uint8_t on)
+void line_follow_test_wheels(uint8_t duty)
 {
     int32_t l, r;
 
-    if (on != 0U) {
-        /* ★ 自检故意也带上 LF_TRIM:
-         *   两个轮子本来发的是完全相同的指令, 所以车拐弯的唯一原因就是
-         *   电机本身的差异。于是 KEY2 就成了调 LF_TRIM 最快的工具 ——
-         *   看车直不直, 直接改 LF_TRIM, 不用反复进循迹模式试。 */
-        l = (int32_t)LF_TEST_DUTY - LF_TRIM;
-        r = (int32_t)LF_TEST_DUTY + LF_TRIM;
-        if (l < 0) { l = 0; }
-        if (r < 0) { r = 0; }
-
-        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  l);
-        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, r);
-
-        s_left_duty  = (uint8_t)l;
-        s_right_duty = (uint8_t)r;
-    } else {
+    if (duty == 0U) {
         lf_stop_wheels();
+        return;
     }
+
+    /* ★ 自检故意也带上 LF_TRIM:
+     *   两个轮子发的是【完全相同的指令】, 所以车如果拐弯, 唯一原因就是
+     *   两个电机本身的差异。于是 KEY2 就成了调 LF_TRIM 最快的工具。
+     *
+     * ★ duty 由调用者给(empty.c 里 KEY2 会一档一档往上加), 这样就能:
+     *   把车拿在手上, 一直按 KEY2 升档, 看哪一档两个轮子开始能【持续转动】,
+     *   那个值就是【电机启动死区】。LF_BASE_DUTY 必须明显高于它 ——
+     *   贴着死区会出现"速度调低反而左右摆得更凶"那种怪现象。 */
+    l = (int32_t)duty - LF_TRIM;
+    r = (int32_t)duty + LF_TRIM;
+    if (l < 0) { l = 0; }
+    if (r < 0) { r = 0; }
+
+    lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  l);
+    lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, r);
+
+    s_left_duty  = (uint8_t)l;
+    s_right_duty = (uint8_t)r;
 }
 
 int16_t line_follow_get_error(void)      { return s_error; }

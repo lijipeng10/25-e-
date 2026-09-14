@@ -44,7 +44,10 @@
  *         模块上的指示灯会不会随黑白变化
  *
  *  【按键】
- *      KEY1 = 循迹 开/关        KEY2 = 电机自检(两轮 50%) 开/关
+ *      KEY1 = 循迹 开/关
+ *      KEY2 = 电机自检, 【每按一次升一档占空比】:
+ *             0 -> 10 -> 12 -> 14 -> 16 -> 18 -> 20 -> 0 ...
+ *             把车拿在手上一直按, 看哪一档轮子开始能持续转动 = 电机启动死区。
  *      屏幕右下角一直显示 "K1:Run K2:Test" 提醒。
  *
  *  【循迹怎么走】两个状态自动切换, 不用管:
@@ -62,7 +65,7 @@
  *                           ★ 必须明显高于电机启动死区, 否则左右摆!
  *                             速度调低反而摆得更厉害 = 这个原因
  *          LF_LOST_DUTY     丢线找线速度                      16
- *          LF_TEST_DUTY     KEY2 自检速度                     20
+ *          (KEY2 现在是一档一档升(见上), LF_TEST_DUTY 只作参考上限)
  *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               18
  *                           ★★ 必须 >= LF_BASE_DUTY, 理由见文件里的推导:
  *                             它决定"慢的一侧能降到多低", 降不到 0 就转不过弯
@@ -142,7 +145,12 @@
  * 串口是否还活着由 HB 心跳负责, 不靠这里。 */
 #define UART_SAME_MAX   10U     /* 连续 10 拍(1 秒)不变就不重复打了 */
 
-static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关 */
+static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关(0 = 关) */
+
+/* KEY2 的占空比档位, 每按一次升一档, 到头回到 0。
+ * 用来量【电机启动死区】: 手拿着车一直按, 看哪一档轮子开始能持续转动。 */
+static const uint8_t k_test_levels[] = { 0U, 10U, 12U, 14U, 16U, 18U, 20U };
+static uint8_t s_test_idx = 0U;     /* 当前在第几档 */
 
 /* ---------- 心跳 ----------
  * 主循环每转一圈 s_hb 加 1, 加够了就翻转 LED2。
@@ -476,15 +484,35 @@ int main(void)
             DBG_MSG(line_follow_is_running() ? "follow ON\r\n" : "follow OFF\r\n");
         }
 
-        /* ---------------- KEY2: 电机自检 ---------------- */
+        /* ---------------- KEY2: 电机自检(升档量死区) ----------------
+         * 每按一次占空比升一档, 到头回到 0:
+         *      0 -> 10 -> 12 -> 14 -> 16 -> 18 -> 20 -> 0 ...
+         * 用法: 把车【拿在手上】(轮子离地), 一直按 KEY2 升档,
+         *       看哪一档两个轮子开始能【持续转动】—— 那个值就是电机启动死区。
+         *       LF_BASE_DUTY 必须明显高于它, 否则会出现
+         *       "速度调低反而左右摆得更凶"那种怪现象。
+         * 屏幕上的 L: / R: 会实时显示当前档位的占空比。 */
         else if (code == 2U)
         {
+            char buf[4];
+
             line_follow_stop();
-            s_test_mode = (uint8_t)((s_test_mode == 0U) ? 1U : 0U);
-            line_follow_test_wheels(s_test_mode);
+
+            s_test_idx++;
+            if (s_test_idx >= (uint8_t)(sizeof(k_test_levels) / sizeof(k_test_levels[0]))) {
+                s_test_idx = 0U;
+            }
+            s_test_mode = (uint8_t)((k_test_levels[s_test_idx] != 0U) ? 1U : 0U);
+            line_follow_test_wheels(k_test_levels[s_test_idx]);
             show_status();
-            DBG_MSG("[KEY2] ");
-            DBG_MSG(s_test_mode ? "motor TEST on\r\n" : "motor TEST off\r\n");
+
+            /* 打一行出来, 免得只靠屏幕看 */
+            buf[0] = (char)('0' + k_test_levels[s_test_idx] / 10U);
+            buf[1] = (char)('0' + k_test_levels[s_test_idx] % 10U);
+            buf[2] = 0;
+            DBG_MSG("[KEY2] motor test duty ");
+            DBG_MSG(buf);
+            DBG_MSG("%\r\n");
         }
 
         /* ---------------- 每 10ms: 循迹控制 ---------------- */

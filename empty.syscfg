@@ -204,6 +204,15 @@ GPIO9.associatedPins[3].initialValue = "SET";
 GPIO9.associatedPins[3].pin.$assign  = "PB26";
 
 I2C1.$name                             = "MPU6050";
+/* ★★ 这一行是必须的, 少了它 I2C 根本不能用! ★★
+ * 没有它, SysConfig 认为"这个 I2C 实例不做控制器", 于是:
+ *     - 不生成 DL_I2C_Config
+ *     - SYSCFG_DL_MPU6050_init() 里【不会有 DL_I2C_init() / DL_I2C_enable()】
+ * 结果就是外设压根没跑起来, 任何地址都不会应答 ——
+ * 表现为"传感器接得好好的, 却一直探测不到"(实际踩过)。
+ * 依据: TI 官方例子 comm_modules/i2c_controller/i2c_controller.syscfg 里有
+ *       I2C1.basicEnableController = true; 而我们这份漏了。 */
+I2C1.basicEnableController             = true;
 I2C1.peripheral.$assign                = "I2C0";
 I2C1.peripheral.sdaPin.$assign         = "PA0";
 I2C1.peripheral.sclPin.$assign         = "PA1";

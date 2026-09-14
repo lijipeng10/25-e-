@@ -306,6 +306,57 @@ K1=follow on/off   K2=motor test
 
 跟真实数据的格式一模一样，排查时被误导过。**已经删掉，不要加回去。**
 
+### 4.6 ★ SysConfig 里漏一个勾，I2C 就完全不能用（实测踩过）
+
+**症状**：MPU6050 接得好好的（供电、共地、SDA/SCL 都对着），
+但怎么都探测不到 —— OLED 上一直显示 `MPU:NO`。
+
+**根因**：`empty.syscfg` 里少了这一行：
+
+```js
+I2C1.basicEnableController = true;
+```
+
+少了它，SysConfig 认为「这个 I2C 实例不做控制器」，于是
+`SYSCFG_DL_MPU6050_init()` 里**只有时钟和滤波，没有控制器配置、也没有
+`DL_I2C_enableController()`** —— 外设压根没跑起来，任何地址都不会应答。
+
+**改前**（缺的）：
+
+```c
+SYSCFG_DL_MPU6050_init(void) {
+    DL_I2C_setClockConfig(...);
+    DL_I2C_setAnalogGlitchFilterPulseWidth(...);
+    DL_I2C_enableAnalogGlitchFilter(...);
+}                       /* ← 就这么多，没了 */
+```
+
+**改后**：
+
+```c
+SYSCFG_DL_MPU6050_init(void) {
+    DL_I2C_setClockConfig(...);
+    DL_I2C_setAnalogGlitchFilterPulseWidth(...);
+    DL_I2C_enableAnalogGlitchFilter(...);
+    /* Configure Controller Mode */
+    DL_I2C_resetControllerTransfer(MPU6050_INST);
+    DL_I2C_setTimerPeriod(MPU6050_INST, 31);        /* 100 kHz */
+    DL_I2C_setControllerTXFIFOThreshold(...);
+    DL_I2C_setControllerRXFIFOThreshold(...);
+    DL_I2C_enableControllerClockStretching(MPU6050_INST);
+    /* Enable module */
+    DL_I2C_enableController(MPU6050_INST);          /* ★ 关键就是这个 */
+}
+```
+
+**依据**：TI 官方例子 `comm_modules/i2c_controller/i2c_controller.syscfg` 里有这行。
+
+> 💡 **通用教训**：SysConfig 里某个外设「加了实例」不等于「配好了」。
+> 判断方法：**去看生成的 `ti_msp_dl_config.c` 里有没有 `DL_xxx_init()` /
+> `DL_xxx_enable()`**。只有 setClockConfig + 滤波、没有 init/enable，
+> 就说明还差一个勾。
+> （OLED 的 SPI 就是对的：`DL_SPI_init` + `DL_SPI_enable` 都有）
+
 ---
 
 ## 5. 参数在哪改

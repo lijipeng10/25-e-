@@ -134,6 +134,14 @@
 #define DISP_MS     100U        /* 屏幕刷新周期 */
 #define UART_MS     100U        /* 串口打印周期 */
 
+/* ★ 串口"只在变化时打印"
+ * 原来每 100ms 打一行, 一秒 10 行一模一样的内容 —— 调参时真正有用的变化
+ * 全被这一堆重复行淹了, 这是调参阶段最大的干扰。
+ * 改成: 数据(灰度位图 / 误差 / 左右轮占空比)一变就打; 连续 UART_SAME_MAX 拍
+ *       没变就停住不打, 等它变。这样划传感器时日志是"跳着"出的, 一眼看得出。
+ * 串口是否还活着由 HB 心跳负责, 不靠这里。 */
+#define UART_SAME_MAX   10U     /* 连续 10 拍(1 秒)不变就不重复打了 */
+
 static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关 */
 
 /* ---------- 心跳 ----------
@@ -144,6 +152,14 @@ static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关 */
  * 数值随便, 只影响闪的快慢, 越大越慢。 */
 #define HB_LOOPS    300000U
 static uint32_t s_hb = 0U;          /* 心跳计数 */
+
+/* 串口"只在变化时打印"用的状态: 上一拍打印过的值 + 连续没变的拍数。
+ * 初值故意设成"不可能出现的值", 这样开机第一次一定打印。 */
+static uint8_t  s_last_bits = 0xFFU;
+static int16_t  s_last_err  = 0x7FFF;
+static uint8_t  s_last_ld   = 0xFFU;
+static uint8_t  s_last_rd   = 0xFFU;
+static uint8_t  s_same_cnt  = 0U;
 
 /* ---------------------------------------------------------------------------
  *  中断服务: main_timer(TIMA0, 50ms) 里扫键
@@ -478,11 +494,31 @@ int main(void)
             line_follow_step();
         }
 
-        /* ---------------- 每 100ms: 串口打印传感器 ---------------- */
+        /* ---------------- 每 100ms: 串口打印传感器(只在变化时) ----------------
+         * 详见 UART_SAME_MAX 的说明: 一变就打; 连续 1 秒没变就停, 免得刷屏。 */
         if ((now - last_uart_ms) >= UART_MS)
         {
+            uint8_t bits = line_follow_get_bits();
+            int16_t err  = line_follow_get_error();
+            uint8_t ld   = line_follow_get_left_duty();
+            uint8_t rd   = line_follow_get_right_duty();
+
             last_uart_ms = now;
-            DBG_SENSOR();
+
+            if ((bits != s_last_bits) || (err != s_last_err) ||
+                (ld   != s_last_ld)   || (rd  != s_last_rd))
+            {
+                s_last_bits = bits;  s_last_err = err;
+                s_last_ld   = ld;    s_last_rd  = rd;
+                s_same_cnt  = 0U;
+                DBG_SENSOR();
+            }
+            else if (s_same_cnt < UART_SAME_MAX)
+            {
+                s_same_cnt++;
+                DBG_SENSOR();
+            }
+            /* 连续 UART_SAME_MAX 拍都一样 -> 不打了, 等它变 */
         }
 
         /* ---------------- 每 100ms: 刷屏 ---------------- */

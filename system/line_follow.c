@@ -351,6 +351,19 @@ static uint16_t s_lost_ms;          /* 已经连续丢线多久(ms) */
 static int16_t  s_e_min;            /* 本次运行 error 的最小值 */
 static int16_t  s_e_max;            /* 本次运行 error 的最大值 */
 
+/* ★ 摆动计数器: 数 error 的符号翻了几次(来回摆了几次)。
+ *
+ * 为什么要它: 光看"最大/最小"只知道摆【多厉害】, 不知道摆【多快】。
+ * 而这两种毛病的改法是相反的:
+ *      摆得快(次数多、幅度小) -> 控制器反应太灵敏 -> 降 LF_KP 或加回一点死区
+ *      摆得慢(次数少、幅度大) -> 控制器太弱 -> 加 LF_KP
+ * 所以必须把"次数"也量出来。
+ *
+ * 计数条件: error 从 <=-14 翻到 >=+14(或反过来)才算一次 ——
+ * 必须越过一整档(14), 这样才不会被 0 附近的小抖动刷成天文数字。 */
+static int16_t  s_prev_err;         /* 上一拍的误差 */
+static uint16_t s_e_flips;          /* 本次运行 error 符号翻转次数 */
+
 /* ★★ 方向证据 —— 决定弯道往哪边转 ★★
  *
  * 踩过的坑: 原来直接用 s_last_dir 定转向方向, 结果到弯道"算不出往哪边转"。
@@ -527,6 +540,8 @@ void line_follow_init(void)
     s_corner_ms  = 0U;
     s_e_min      = 0;
     s_e_max      = 0;
+    s_prev_err   = 0;
+    s_e_flips    = 0U;
 }
 
 void line_follow_start(void)
@@ -542,6 +557,8 @@ void line_follow_start(void)
     s_corner_ms = 0U;
     s_e_min     = 0;        /* 误差记录器清零, 只记这一次运行 */
     s_e_max     = 0;
+    s_prev_err  = 0;
+    s_e_flips   = 0U;
     s_running   = 1U;
 }
 
@@ -620,6 +637,13 @@ void line_follow_step(void)
     /* 记录本次运行的误差摆幅(见 s_e_min / s_e_max 的说明) */
     if (error < s_e_min) { s_e_min = error; }
     if (error > s_e_max) { s_e_max = error; }
+
+    /* 数摆动次数(见 s_e_flips 的说明): 必须越过一整档 14 才算翻了一次 */
+    if (((error >= 14) && (s_prev_err <= -14)) ||
+        ((error <= -14) && (s_prev_err >= 14))) {
+        s_e_flips++;
+    }
+    s_prev_err = error;
 
     /* ================================================================
      *  状态 A: 正在原地转向(弯道模式)
@@ -802,6 +826,12 @@ void line_follow_get_error_range(int16_t *mn, int16_t *mx)
 {
     if (mn != 0) { *mn = s_e_min; }
     if (mx != 0) { *mx = s_e_max; }
+}
+
+/* 本次运行期间 error 符号翻了几次(= 来回摆了几次), 见 s_e_flips 的说明。 */
+uint16_t line_follow_get_error_flips(void)
+{
+    return s_e_flips;
 }
 
 /* ---------------------------------------------------------------------------

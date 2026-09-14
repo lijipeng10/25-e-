@@ -337,6 +337,12 @@ static void show_status(void)
         OLED_ShowString(0, 0, (u8 *)"LF:STOP ", 16);
     }
 
+    /* 状态行右边挂一个摆动计数: 本次运行 E 的符号翻了几次。
+     * 摆得多但幅度小 -> 控制器太灵敏(降 KP);
+     * 摆得少但幅度大 -> 控制器太弱(加 KP)。详见 s_e_flips 的说明。 */
+    OLED_ShowString(72, 0, (u8 *)"F:", 16);
+    OLED_ShowNum(88, 0, line_follow_get_error_flips(), 3, 16);
+
     line_follow_get_raw(raw);
     OLED_ShowString(0, 16, (u8 *)"S:", 12);
     show_raw(12, 16, raw, 12);

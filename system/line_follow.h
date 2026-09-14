@@ -92,4 +92,9 @@ void line_follow_get_params(uint16_t *out);
  * 车在跑的时候没法盯屏幕, 这个就是用来"停下车再回头看摆得多厉害"的。 */
 void line_follow_get_error_range(int16_t *mn, int16_t *mx);
 
+/* 本次运行期间 error 符号翻了几次(= 来回摆了几次)。
+ * 摆得快(次数多但幅度小) -> 控制器太灵敏, 降 LF_KP;
+ * 摆得慢(次数少但幅度大) -> 控制器太弱,   加 LF_KP。 */
+uint16_t line_follow_get_error_flips(void);
+
 #endif /* LINE_FOLLOW_H */

@@ -22,6 +22,13 @@ void    motor_speed_disable(void);
  *   用来防"编码器没接好 -> PI 以为是0 -> 积分顶到满占空比 -> 车突然全速冲出去" */
 uint8_t  motor_speed_get_fault(uint8_t id);
 
+/* ★ 最近一个采样周期(20ms)里数到的【原始脉冲数】。诊断用:
+ *     轮子停着的时候是 0        -> 正常
+ *     停着还是非 0              -> 输入脚在飘/干扰(接线或供电问题)
+ *     手转轮子会跟着变          -> 编码器是好的
+ *   "实测速度"是它换算出来的, 所以这个数不对, 速度一定不对。 */
+int32_t  motor_speed_get_raw(uint8_t id);
+
 int32_t  motor_speed_get(uint8_t id);         /* 实测速度 mm/s */
 int32_t  motor_speed_get_target(uint8_t id);  /* 目标速度 mm/s */
 uint16_t motor_speed_get_duty(uint8_t id);    /* PI 给出的占空比 */

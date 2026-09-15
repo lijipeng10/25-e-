@@ -401,15 +401,17 @@ static void show_test(void)
     OLED_ShowString(48, 40, (u8 *)"d2", 12);
     OLED_ShowNum(66, 40, motor_speed_get_duty(2U), 2, 12);
 
-    /* ACT = 本模块在驱动; ERR = 编码器故障(命令有速度但实测≈0, 已切断该轮输出)
-     * ★ 看到 ERR 就是【编码器没在计数】, 别怀疑参数 —— 先查接线/中断。 */
-    OLED_ShowString(0, 52, (u8 *)"ACT", 12);
-    OLED_ShowNum(24, 52, motor_speed_is_active(), 1, 12);
+    /* ★ 第 4 行: 原始脉冲数(每 20ms 数到几个) —— 诊断编码器用
+     *     轮子停着 = 0       正常
+     *     停着也非 0         输入脚在飘/干扰 -> 查接线和编码器供电
+     *     手转轮子跟着变     编码器是好的
+     *   (实测速度 m 就是它换算出来的, 它不对 m 一定不对) */
+    OLED_ShowString(0, 52, (u8 *)"c", 12);
+    OLED_ShowNum(12, 52, (u32)motor_speed_get_raw(1U), 3, 12);
+    OLED_ShowString(48, 52, (u8 *)"c", 12);
+    OLED_ShowNum(60, 52, (u32)motor_speed_get_raw(2U), 3, 12);
     if ((motor_speed_get_fault(1U) != 0U) || (motor_speed_get_fault(2U) != 0U)) {
-        OLED_ShowString(48, 52, (u8 *)"1", 12);
-        OLED_ShowString(54, 52, (u8 *)"ERR", 12);
-        OLED_ShowNum(72, 52, motor_speed_get_fault(1U), 1, 12);
-        OLED_ShowNum(84, 52, motor_speed_get_fault(2U), 1, 12);
+        OLED_ShowString(96, 52, (u8 *)"ERR", 12);
     }
 
     OLED_Refresh();

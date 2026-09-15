@@ -36,6 +36,7 @@ static uint32_t s_last_ms;
 static uint8_t  s_active;
 static uint16_t s_fault_ms[2];          /* "命令有速度但实测≈0"已经持续多久 */
 static uint8_t  s_fault[2];             /* 1 = 编码器故障, 该轮已切断输出 */
+static int32_t  s_raw[2];               /* 上一采样周期的原始脉冲数(诊断用) */
 
 void motor_speed_isr(uint32_t sta_gpioa, uint32_t sta_gpiob)
 {
@@ -122,6 +123,7 @@ void motor_speed_update(void)
         c = s_count[i];
         s_count[i] = 0;
         __enable_irq();
+        s_raw[i] = c;                   /* ★ 存下来给屏幕看(诊断) */
 
         /* counts -> mm/s:  计数/每圈计数 * 周长 * 1000 / dt */
         mm_s = (int32_t)(((int64_t)c * (int64_t)MS_WHEEL_C_MM * 1000)
@@ -161,3 +163,4 @@ int32_t  motor_speed_get_target(uint8_t id) { return ((id >= 1U) && (id <= 2U)) 
 uint16_t motor_speed_get_duty(uint8_t id)   { return ((id >= 1U) && (id <= 2U)) ? s_duty[id - 1U] : 0U; }
 uint8_t  motor_speed_is_active(void)        { return s_active; }
 uint8_t  motor_speed_get_fault(uint8_t id)  { return ((id >= 1U) && (id <= 2U)) ? s_fault[id - 1U] : 0U; }
+int32_t  motor_speed_get_raw(uint8_t id)    { return ((id >= 1U) && (id <= 2U)) ? s_raw[id - 1U] : 0; }

@@ -52,7 +52,7 @@
  *      车在跑的时候盯不了屏幕, 所以停下来看这一行就知道它摆得多厉害:
  *          Emin/Emax 都在 ±30 以内 -> 控制稳
  *          Emin/Emax 到 ±70 以上   -> 车已经甩到线边上, 修正太晚/太弱
- *          正负都很大且对称        -> 典型来回超调(画龙), 该降 LF_KP
+ *          正负都很大且对称        -> 典型来回超调(画龙), 该降 LF_POS_KP
  *
  *  【循迹怎么走】两个状态自动切换, 不用管:
  *      LF:RUN   正常循迹(跟着线走, 差速修正)
@@ -65,27 +65,34 @@
  *  【速度/参数在哪改】
  *      全部在 system/line_follow.c 最上面那一块 "可调参数":
  *          LF_MAX_DUTY      ★ 最高速度硬顶(任何一轮都不许超过)  20
- *          LF_BASE_DUTY     直行基础速度                      18
+ *          LF_BASE_DUTY     直行基础速度                      20
  *                           ★ 必须明显高于电机启动死区, 否则左右摆!
  *                             速度调低反而摆得更厉害 = 这个原因
  *          LF_LOST_DUTY     丢线找线速度                      16
  *          (KEY2 现在是一档一档升(见上), LF_TEST_DUTY 只作参考上限)
- *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               18
+ *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               20
  *                           ★★ 必须 >= LF_BASE_DUTY, 理由见文件里的推导:
  *                             它决定"慢的一侧能降到多低", 降不到 0 就转不过弯
- *          LF_KP / LF_KD    转向 PID 的 P / D                 20 / 0
- *                           ★ D 必须是 0 或很小, 理由见文件里的推导
- *                           ★ KP 必须和 LF_MAX_STEER 配套改, 见文件里说明
- *          LF_DEADBAND      ★ 误差死区, |误差| 小于它就不修正      15
- *                           ★ 专治直线上的左右摆: 误差最小跳变是 14,
- *                             车根本停不住停在 14 上, 于是 steer 在 ±2 之间
- *                             来回跳 -> 摆。死区把这档压掉就不摆了
+ *          ★★ 双环(航向环) —— 现在的主力调参就是前面这两个 ★★
+ *          LF_POS_KP        外环: 位置误差 -> 目标航向(0.1度/格)    3
+ *                           调大 = 回正更积极(但容易冲过头画龙)
+ *                           调小 = 更温和(但小偏差时贴不上线)
+ *          LF_HEAD_KP       内环: 航向差 -> 转向量(每 10 度给多少)   5
+ *                           调大 = 车头追目标更快更跟手(太大直道会抖)
+ *                           调小 = 外环给了目标车头却跟不上("想转转不动")
+ *          LF_GYRO_KD       陀螺仪阻尼(带符号, 已实测【左转为正】)  +6
+ *                           ★ 调大能压摆尾, 但弯道上会转不动/转反 ——
+ *                             原因和取舍见 line_follow.c 里这一项的推导
+ *          LF_PSI_MAX       目标航向限幅(0.1度)                 600 (=60度)
+ *          LF_DEADBAND      ★ 误差死区, 现在给 0, 【不要动它】
+ *                           ★ 曾经以为它治左右摆, 实测【反而摆得更凶】:
+ *                             它把"完全不管"和"猛踢一下"之间的过渡削掉了
  *
  *          --- 弯道: 停车原地转向再前进 ---
- *          LF_PIVOT_TRIGGER_MS  连续丢线多久判定"到弯节点"     80
- *          LF_PIVOT_DUTY        原地转向的占空比(一正一反)      16
+ *          LF_PIVOT_TRIGGER_MS  连续丢线多久判定"到弯节点"    150
+ *          LF_PIVOT_DUTY        原地转向的占空比(一正一反)      20
  *          LF_PIVOT_OK          |误差| 小于它就算"对准了"        20
- *          LF_PIVOT_TRY_MS      一个方向找多久没找到就掉头找   900
+ *          LF_PIVOT_TRY_MS      一个方向找多久没找到就掉头找  1300
  *                               (两个方向合计 1.8 秒封顶)
  *
  *      ★ 约束(违反了直接编译报错, 不会等跑车才发现):
@@ -246,7 +253,7 @@ static void pc_put_u3(uint8_t v)
     pc_putc((char)('0' + (v % 10U)));
 }
 
-/* 打印一行状态:  S=00011000 E=-014 L=040 R=040
+/* 打印一行状态:  S=00011000 E=-014 L=040 R=040 H=+012 P=-030
  *
  *   S   : 8 路灰度原始值, 从左到右, 1 = 黑线
  *   E   : 线偏差, 负 = 线在左边, 正 = 线在右边
@@ -290,6 +297,19 @@ static void pc_print_sensor(void)
     pc_put_u3(line_follow_get_left_duty());
     pc_puts(" R=");
     pc_put_u3(line_follow_get_right_duty());
+
+    /* ★ 双环的两个关键观测量, 单位都是【度】, 左转为正:
+     *     H = 车头现在实际朝哪(陀螺积分出来的航向角)
+     *     P = 外环希望车头朝哪(目标航向 psi_ref)
+     *   调参就看这两个数的关系:
+     *     P 自己跳来跳去        -> 外环太猛, 降 LF_POS_KP
+     *     H 老是追不上 P        -> 内环太弱, 加 LF_HEAD_KP
+     *     H 冲过 P 再摆回来     -> 阻尼不够, 加 LF_GYRO_KD
+     *   (屏幕上只有 H, 没有 P —— 128x64 已经排满了, 所以 P 走串口) */
+    pc_puts(" H=");
+    pc_put_signed4((int16_t)(mpu6050_get_yaw_x10() / 10));
+    pc_puts(" P=");
+    pc_put_signed4((int16_t)(line_follow_get_psi_ref() / 10));
 
     pc_puts("\r\n");
 }
@@ -368,6 +388,15 @@ static void show_status(void)
     OLED_ShowString(36, 40, (u8 *)"R:", 12);
     OLED_ShowNum(48, 40, line_follow_get_right_duty(), 3, 12);
 
+    /* ★ 航向角 H:(单位 度, 带符号, 【左转为正】)。
+     *   这是双环新增的关键观测量, 调参时主要看它:
+     *     正常: 平滑地变化, 抖动的幅度应该【比 R: 那一行小得多】
+     *     跳变/锯齿: 外环太猛 -> 降 LF_POS_KP
+     *     长期不回到 0 附近: 内环跟不上 -> 加 LF_HEAD_KP, 或者 LF_GYRO_KD 太大
+     *   (外环给的目标航向 psi_ref 目前只在串口调试口打印, 屏幕上没位置了) */
+    OLED_ShowString(72, 40, (u8 *)"H:", 12);
+    show_signed3(84, 40, (int16_t)(mpu6050_get_yaw_x10() / 10), 12);
+
     /* 第 5 行: 本次运行的误差摆幅 (原来这里是按键提示, 信息量太低)
      * 车在跑的时候盯不了屏幕, 所以把 E 的最小/最大值记下来, 停下来再看。 */
     {
@@ -390,12 +419,16 @@ static void show_status(void)
  *  调参时反复改值烧录, 这个特别省事。
  *  (嫌 4 秒太短就按一下复位再看一遍, 复位现在是可靠的)
  *
- *  布局(128x64):
- *      y=0   16px  PARAM
- *      y=16  12px  BASE xx      ST   xx
- *      y=28  12px  KP   xx      DB   xx
- *      y=40  12px  TRIM ±x      LOST xx
- *      y=52  12px  PIV  xxx     PD   xx
+ *  布局(128x64): 5 行 x 2 列
+ *      y=0   12px  BASE xx      ST   xx    基础速度 / 转向量上限
+ *      y=13  12px  POS  xx      HED  xx    ★ 双环的两个主要增益
+ *      y=26  12px  TRIM ±xx     CNR  xx    左右补偿 / 急弯判据
+ *      y=39  12px  PIV  xxx     GY   ±xx   弯道判据 / 陀螺阻尼
+ *      y=52  12px  PD   xx      MPU:xx     原地转向占空比 / 陀螺在不在
+ *
+ *  ★ 原来 y=13 放的是 KP 和 DB(死区): KP 现在拆成了 POS/HED 两个,
+ *    DB 固定是 0、没有信息量, 两个槽位就都让出来了。
+ *  ★ 目标航向 psi_ref 和航向角看【状态页】那一行 H:(见 show_status)。
  *
  *  想加参数: 在 line_follow.h 里加 LF_P_xxx 序号, line_follow.c 里补一行,
  *            然后在这里画出来 —— 屏幕只剩这几行, 要腾地方就删旧的。
@@ -413,10 +446,12 @@ static void show_params(void)
     OLED_ShowString(66, 0, (u8 *)"ST", 12);
     OLED_ShowNum(102, 0, p[LF_P_STEER], 2, 12);
 
-    OLED_ShowString(0, 13, (u8 *)"KP", 12);
-    OLED_ShowNum(36, 13, p[LF_P_KP], 2, 12);
-    OLED_ShowString(66, 13, (u8 *)"DB", 12);
-    OLED_ShowNum(102, 13, p[LF_P_DEADBAND], 2, 12);
+    /* ★ 双环的两个主要增益: 调参就是调这两个
+     *   POS = 外环(位置误差 -> 目标航向)  HED = 内环(航向差 -> 转向量) */
+    OLED_ShowString(0, 13, (u8 *)"POS", 12);
+    OLED_ShowNum(36, 13, p[LF_P_POS], 2, 12);
+    OLED_ShowString(66, 13, (u8 *)"HED", 12);
+    OLED_ShowNum(102, 13, p[LF_P_HEAD], 2, 12);
 
     OLED_ShowString(0, 26, (u8 *)"TRIM", 12);
     t = (int16_t)p[LF_P_TRIM];              /* 可能是负数, 要带符号画 */
@@ -428,16 +463,18 @@ static void show_params(void)
 
     OLED_ShowString(0, 39, (u8 *)"PIV", 12);
     OLED_ShowNum(36, 39, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
-    OLED_ShowString(66, 39, (u8 *)"PD", 12);
-    OLED_ShowNum(102, 39, p[LF_P_PIV_DUTY], 2, 12);
 
-    /* 陀螺仪阻尼(带符号, 治左右摆尾)。符号怎么定见 line_follow.c 的说明:
-     * 用手把车头往左转, 看状态页 R: 是正还是负。 */
-    OLED_ShowString(0, 52, (u8 *)"GY", 12);
+    /* 陀螺仪阻尼(带符号, 治左右摆尾)。
+     * ★ 符号【已实测确认】: 车头往左转 -> 状态页 R: 显示为正 -> 这里取正号。 */
+    OLED_ShowString(66, 39, (u8 *)"GY", 12);
     t = (int16_t)p[LF_P_GYRO];
-    OLED_ShowChar(36, 52, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    OLED_ShowChar(102, 39, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
     if (t < 0) { t = (int16_t)(-t); }
-    OLED_ShowNum(42, 52, (u32)t, 2, 12);
+    OLED_ShowNum(108, 39, (u32)t, 2, 12);
+
+    /* 原地转向占空比: 弯道原地转要克服静摩擦, 调小了拧不动、容易超时 */
+    OLED_ShowString(0, 52, (u8 *)"PD", 12);
+    OLED_ShowNum(36, 52, p[LF_P_PIV_DUTY], 2, 12);
 
     /* 陀螺仪在不在、用的哪个地址 —— 画在屏幕上, 不用看串口。
      * MPU:68 / MPU:69 都算正常(只是模块 AD0 脚接法不同), MPU:NO 才是没接上。 */
@@ -547,7 +584,7 @@ int main(void)
     OLED_Clear();               /* 擦掉开机画面, 免得和状态行错位留残余 */
 
     /* ★ 这里原来打印了两行【写死的样板数据】:
-     *       S=00011000 E=-014 L=040 R=040
+     *       S=00011000 E=-014 L=040 R=040 H=+012 P=-030
      *       K1=follow on/off   K2=motor test
      *   它们跟下面真实的数据行长得一模一样, 极容易看错(实测就被骗过一次)。
      *   所以只留"格式说明", 而且写成一眼能看出不是数据的样子。 */

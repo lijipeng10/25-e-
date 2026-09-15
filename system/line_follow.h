@@ -76,7 +76,7 @@ uint8_t line_follow_get_right_duty(void);
  *       不用去翻源码、也不依赖串口。调参反复改值烧录时特别有用。 */
 #define LF_P_BASE        0      /* 基础速度 LF_BASE_DUTY */
 #define LF_P_STEER       1      /* 转向量上限 LF_MAX_STEER (= 转弯力度) */
-#define LF_P_KP          2      /* 转向比例 LF_KP */
+#define LF_P_HEAD        2      /* 内环比例 LF_HEAD_KP (航向差 -> 转向量) */
 #define LF_P_DEADBAND    3      /* 误差死区 LF_DEADBAND */
 #define LF_P_TRIM        4      /* 左右电机补偿 LF_TRIM (带符号) */
 #define LF_P_LOST        5      /* 丢线找线速度 LF_LOST_DUTY */
@@ -86,7 +86,9 @@ uint8_t line_follow_get_right_duty(void);
 #define LF_P_PIV_OK      9      /* 对准判据 LF_PIVOT_OK */
 #define LF_P_CORNER     10      /* 急弯判据 LF_CORNER_ERR (= 过弯冲过头的关键参数) */
 #define LF_P_GYRO       11      /* 陀螺仪阻尼 LF_GYRO_KD (带符号, 治左右摆尾) */
-#define LF_P_COUNT      12
+#define LF_P_POS        12      /* 外环比例 LF_POS_KP (位置误差 -> 目标航向) */
+#define LF_P_PSI_MAX    13      /* 目标航向限幅 LF_PSI_MAX (0.1度) */
+#define LF_P_COUNT      14
 void line_follow_get_params(uint16_t *out);
 
 /* 本次运行期间 error 到过的最小 / 最大值(按 KEY1 启动时清零)。
@@ -94,8 +96,13 @@ void line_follow_get_params(uint16_t *out);
 void line_follow_get_error_range(int16_t *mn, int16_t *mx);
 
 /* 本次运行期间 error 符号翻了几次(= 来回摆了几次)。
- * 摆得快(次数多但幅度小) -> 控制器太灵敏, 降 LF_KP;
- * 摆得慢(次数少但幅度大) -> 控制器太弱,   加 LF_KP。 */
+ * 摆得快(次数多但幅度小) -> 控制器太灵敏, 降 LF_POS_KP;
+ * 摆得慢(次数少但幅度大) -> 控制器太弱,   加 LF_POS_KP。 */
 uint16_t line_follow_get_error_flips(void);
+
+/* 外环算出的目标航向(0.1度, 左转为正)。
+ * 双环调参主要看它: 和 mpu6050_get_yaw_x10()(实际航向) 一起看,
+ * 两个数差得多 = 内环跟不上(加 LF_HEAD_KP); 它自己跳得厉害 = 外环太猛(降 LF_POS_KP)。 */
+int16_t line_follow_get_psi_ref(void);
 
 #endif /* LINE_FOLLOW_H */

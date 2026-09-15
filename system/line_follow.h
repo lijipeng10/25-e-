@@ -56,13 +56,12 @@ uint8_t line_follow_get_bits(void);
  * 标定传感器时看这个: 车压线时对应位变不变, 一眼就能判断极性对不对 */
 void line_follow_get_raw(uint16_t *out);
 
-/* 电机自检: duty = 占空比 0~100, 传 0 = 停。
- * 两个轮子用【相同的占空比 + 相同的前进方向】输出, 所以车如果拐弯,
- * 唯一原因就是两个电机本身的差异 —— 用它量「电机启动死区」和调 LF_TRIM 都很方便。
- * (empty.c 里 KEY2 会一档一档往上加占空比) */
-void line_follow_test_wheels(uint8_t duty);
+/* ★ line_follow_test_wheels() 已删除 —— 见 line_follow.c 里的说明。
+ *   现在测电机用 KEY2(直接命令速度, 走速度环)。 */
 
-/* 最近一次左右轮实际输出了多少占空比(0~100) */
+/* 速度环【实际给出】的占空比(0~100)。★ 注意它不再是"我们命令了多少":
+ *   它现在是一把尺子, 用来判断 LF_BASE_SPEED 定得合不合适 ——
+ *   一直顶在 20 = 速度定高了、占空比饱和了、差速没余量; 稳在 12~17 = 健康。 */
 uint8_t line_follow_get_left_duty(void);
 uint8_t line_follow_get_right_duty(void);
 
@@ -70,19 +69,20 @@ uint8_t line_follow_get_right_duty(void);
  * 用法:
  *      uint16_t p[LF_P_COUNT];
  *      line_follow_get_params(p);
- *      p[LF_P_BASE] 就是 LF_BASE_DUTY 当前的值 ...
+ *      p[LF_P_BASE] 就是 LF_BASE_SPEED 当前的值 ...
  *
  * 目的: 屏幕上能直接看到「这版固件到底是按什么参数在跑」,
  *       不用去翻源码、也不依赖串口。调参反复改值烧录时特别有用。 */
-#define LF_P_BASE        0      /* 基础速度 LF_BASE_DUTY */
+/* ★ 速度类的参数(下面带 SPEED 字样的)单位都是 mm/s, 不是占空比 */
+#define LF_P_BASE        0      /* 基础速度 LF_BASE_SPEED (mm/s) */
 #define LF_P_STEER       1      /* 转向量上限 LF_MAX_STEER (= 转弯力度) */
 #define LF_P_HEAD        2      /* 内环比例 LF_HEAD_KP (航向差 -> 转向量) */
 #define LF_P_DEADBAND    3      /* 误差死区 LF_DEADBAND */
 #define LF_P_TRIM        4      /* 左右电机补偿 LF_TRIM (带符号) */
-#define LF_P_LOST        5      /* 丢线找线速度 LF_LOST_DUTY */
-#define LF_P_MAX         6      /* 最高速度硬顶 LF_MAX_DUTY */
+#define LF_P_LOST        5      /* 丢线找线速度 LF_LOST_SPEED (mm/s) */
+#define LF_P_MAX         6      /* 转向量上限 LF_MAX_STEER (mm/s) */
 #define LF_P_PIV_TRIG    7      /* 丢线多久判定到弯节点 LF_PIVOT_TRIGGER_MS */
-#define LF_P_PIV_DUTY    8      /* 原地转向占空比 LF_PIVOT_DUTY */
+#define LF_P_PIV_DUTY    8      /* 原地转向速度 LF_PIVOT_SPEED (mm/s) */
 #define LF_P_PIV_OK      9      /* 对准判据 LF_PIVOT_OK */
 #define LF_P_CORNER     10      /* 急弯判据 LF_CORNER_ERR (= 过弯冲过头的关键参数) */
 #define LF_P_GYRO       11      /* 陀螺仪阻尼 LF_GYRO_KD (带符号, 治左右摆尾) */

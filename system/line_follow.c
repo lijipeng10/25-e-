@@ -36,6 +36,7 @@
 #include "pid.h"                /* 通用 PID */
 #include "tick.h"               /* tick_get_ms */
 #include "mpu6050.h"            /* mpu6050_get_rate_x10: 阻尼项要用角速度 */
+#include "encoder.h"            /* ★ 输出走速度环: motor_speed_set / _get_duty */
 
 /* ============================================================================
  *  可调参数 —— 要改就改这里
@@ -54,84 +55,62 @@
  *   看哪一档两个轮子开始能【持续稳定转动】, 那个值就是启动死区。
  *   实测结果见下面 LF_BASE_DUTY 的说明。 */
 
-/* ★ 最高速度(硬顶): 任何一轮的占空比都不许超过这个值。
- *   不管 LF_BASE_DUTY / LF_MAX_STEER 怎么配, lf_set_wheel() 最后都会把
- *   结果卡在这里, 所以车不可能跑得比它更快。
- *   下面还有一条编译期检查, 配置超了会直接编译报错。 */
-#define LF_MAX_DUTY         20
+/* ============================================================================
+ *  ★★★ 单位变了: 从这里往下, 速度类的数都是【mm/s】, 不再是占空比 ★★★
+ * ----------------------------------------------------------------------------
+ *  上面已经接上了【轮速闭环】(见 hardware/encoder.h):
+ *  命令的是"多少 mm/s", 每轮一个 PI 自己决定占空比。
+ *      LF_BASE_SPEED / LF_LOST_SPEED / LF_MAX_STEER / LF_PIVOT_SPEED —— 全是 mm/s
+ *
+ *  ★ 本节【下面】还有一些老注释在说"占空比", 那是上闭环之前的记录, 留着当历史;
+ *    但【数值和判断一律按新的来】。
+ *
+ *  ★★ 上闭环顺带解决掉的三个老问题(以前是写在下面那几段长注释里的) ★★
+ *    1) 死区: 实测启动死区 <= 10(占空比)。以前 基础20 - steer, steer >= 10 时
+ *       慢轮就掉到死区以下【直接失速】—— 那条"平滑的修正曲线"其实是阶跃。
+ *       现在 PI 会把占空比【顶过死区】: 要 80 mm/s 就真给 80 mm/s。
+ *    2) 电池掉压: 开环时"今天调好明天不准"; 闭环自动补。
+ *    3) 两个电机不一样: 以前靠 LF_TRIM 手调常数硬凑, 现在闭环自动拉平。
+ *
+ *  【参数是【算】出来的, 不是试出来的】
+ *    实测机械参数: W(轮距) = 17 cm = 0.17 m,  L(传感器->驱动轴) = 20 cm
+ *
+ *    差速 -> 角速度:   ω = Δv / W        (Δv = 快轮 - 慢轮)
+ *    本工程是 左 = 基础 + steer, 右 = 基础 - steer, 所以 Δv = 2*steer
+ *         => ω = 2*steer / 0.17   (rad/s)
+ *    反过来: 想要 ω 度/秒, 需要 steer = ω * 0.17 / 2 (m/s) = ω * 0.85 (mm/s)
+ *
+ *    ★ 速度环让【机械参数第一次真正起作用】: 以前占空比的差异是黑盒,
+ *      现在 Δv 是明确值, W 直接决定"同样的转向量能拐多快"。
+ * ==========================================================================*/
 
-/* ★★ 基础速度的选择依据: 电机启动死区 ★★
- *
- * 【实测死区】2026/09/14 用 KEY2 升档法量过:
- *      占空比 10 时两个轮子就已经能【持续稳定转动】-> 死区 <= 10。
- *      (KEY2 最低档就是 10, 所以只能说"<=10", 更低的值没法直接量;
- *       但不影响判断, 因为我们要的余量远大于它)
- *
- * 【为什么要留余量】循迹时差速会把某一侧减掉 steer:
- *      慢的一侧 = LF_BASE_DUTY - steer
- *   如果它掉到死区以下, 那个轮子会【直接不转】, 车猛地往一边窜,
- *   误差反号后另一侧又不转 -> 来回摆。所以要保证"日常修正"不会踩到死区。
- *
- * 【为什么取 18 而不是更慢的 14】
- *   误差最小跳变是 14(见 LF_DEADBAND 的说明), 所以实际用到的 steer 大致是
- *   0 / 5 / 8 / 11 / 14(对应误差 0/28/42/57/71):
- *       LF_BASE_DUTY = 18 -> 慢轮 18/13/10/7/4   到 3 路误差才踩死区
- *       LF_BASE_DUTY = 14 -> 慢轮 14/ 9/ 6/3/0   2 路误差就踩死区了
- *   踩死区越早, 越容易"一顿一顿"。所以取 18。
- *
- * ★ 注意: 之前怀疑过"摆是因为基础速度贴着死区", 那个判断是【错的】——
- *   实测死区只有 <=10, 而当时的基础速度是 14, 差得很远。
- *   当时真正的元凶是数字量传感器的【量化台阶】, 由 LF_DEADBAND 解决。 */
-#define LF_BASE_DUTY        20      /* 直行基础速度 */
-#define LF_LOST_DUTY        16      /* 丢线时的速度(降速找线)。
-                                       同样要留余量, 别掉到死区以下。 */
-#define LF_TEST_DUTY        20      /* 电机自检的参考上限。
-                                       ★ 现在 KEY2 不再直接用这个值 ——
-                                       empty.c 里 KEY2 会一档一档升占空比
-                                       (0,10,12,...,20), 用来量电机启动死区。 */
+/* ★★ 基础速度(直行) ★★
+ * ★ 这个数【必须台架试一次】, 不能照抄: 目标定太高, 占空比会一直顶在 20 饱和,
+ *   那样差速就没法再给了(两个轮子都满力) -> 循迹直接失控。
+ *   判断方法: 按 KEY2 进测试页, 看稳定后的 d1 / d2 ——
+ *       12~17 : 合理(既顶过了死区, 又留了加差速的余量)
+ *       一直顶 20 : 这个速度够不着 -> 往下调(300 -> 250 -> 200)
+ *       只有个位数 : 太慢 -> 往上调
+ */
+#define LF_BASE_SPEED       300     /* 直行基础速度, mm/s */
+#define LF_LOST_SPEED       250     /* 丢线找线速度, mm/s(降速找线) */
 
 /* ---------- 轮子映射 ---------- */
 /* 电机编号: 1 = A路(PB17/PB18), 2 = B路(PB19/PB23) */
 #define LF_LEFT_ID          1U      /* 左轮接在 A路 */
 #define LF_RIGHT_ID         2U      /* 右轮接在 B路 */
 
-/* "前进"对应的方向值。motor.c 里: 1 = 正转, 2 = 反转
- * 这两个值是在手动测试里标定出来的(按 KEY 让车往前跑的那个方向):
- *     A路前进 = 1, B路前进 = 2
- * 如果发现某个轮子反了, 改这里。 */
-#define LF_LEFT_FWD_DIR     1U
-#define LF_RIGHT_FWD_DIR    2U
+/* ★ LF_LEFT_FWD_DIR / LF_RIGHT_FWD_DIR 已经【删掉】了。
+ *   现在"哪个方向是前进"只由 hardware/encoder.c 里的
+ *   MS_LEFT_FWD_DIR / MS_RIGHT_FWD_DIR 管(那才是写方向脚的地方), 只有一处。
+ *   如果发现某个轮子转反了, 改 encoder.c 里那两个。
+ *   (历史: 这里原来是 1 / 2, 实测标定出来的) */
 
-/* ---------- 左右电机补偿 (trim) ----------
- * 两个电机不可能一模一样: 死区、齿轮箱阻力、轮胎摩擦都有差别。
- * 表现就是"给两个轮子同样的占空比, 车却往一边拐"。
- *
- *   LF_TRIM > 0  ->  右轮多出力、左轮少出力   => 车"往左偏"时用正数
- *   LF_TRIM < 0  ->  左轮多出力、右轮少出力   => 车"往右偏"时用负数
- *
- * 注意这里是一加一减: 左轮 -LF_TRIM, 右轮 +LF_TRIM。
- * 这样车的平均速度不变, 只改"左右谁出力多", 不会改变整体快慢。
- *
- * 【怎么调】
- *   1) 车放地上, 按 KEY2 —— 两个轮子发的是【完全一样的指令】(只差这个 trim),
- *      所以车如果拐弯, 唯一原因就是两个电机本身的差异。
- *      (KEY2 现在还会一档一档升占空比, 挑一档能稳定走的用)
- *   2) 每次调 1 个点:
- *          往左偏 -> LF_TRIM 调大 (+1 ...)
- *          往右偏 -> LF_TRIM 调小 (-1 ...)
- *   3) 调到 KEY2 基本直行为止, 再放回循迹。
- *
- * 【实测记录】2026/09/14: 用户按 KEY2 在地上跑, 车"轻微往左偏"
- *           -> 右轮略弱 -> 先用 +2 试。
- *           如果之后变成往右偏就是给多了, 降到 +1; 还是往左偏就升到 +3。
- *
- * 为什么用"加减固定值"而不是"乘一个系数":
- *   两个电机的差别主要来自死区不一样 —— 要让它们转速相同, 需要的其实是一个
- *   固定的占空比差, 和当前速度无关。所以固定加减在任何速度下都对。 */
-#define LF_TRIM             2       /* 实测 KEY2 轻微往左偏 -> 右轮略弱, 先给 +2。
-                                       ★ 这一条的正确值是靠 KEY2 在地上试出来的:
-                                         现在还往左偏 -> 调到 3 / 4
-                                         变成往右偏了 -> 降回 1 / 0 */
+/* ★★ LF_TRIM 现在是 0 —— 闭环会自动拉平两个电机 ★★
+ *   原来它是个手调常数(+2), 用来补偿"两个电机死区/阻力不一样"。
+ *   上了速度环之后这件事由 PI 自己做, 不需要再手工加偏置了。
+ *   ★ 保留这个宏是为了屏幕参数页, 以及以后万一要临时加一点偏置。 */
+#define LF_TRIM             0
 
 /* ---------- 灰度传感器 ---------- */
 /* 灰度读到哪个值算"压线"。用调试画面看: 车压黑线时对应位变 1 就对了;
@@ -282,7 +261,12 @@
  *   否则 psi_ref 会变成一个荒唐的角度(比如 300 度), 让内环一直顶着饱和。 */
 #define LF_POS_KP           2       /* 外环: 位置误差 -> 目标航向 */
 #define LF_PSI_MAX          600     /* 目标航向限幅 ±60 度 (0.1度) */
-#define LF_HEAD_KP          5       /* 内环: 航向差 -> 转向量 */
+#define LF_HEAD_KP          100     /* 内环: 航向差 -> 转向量(mm/s)。
+                                       ★ 单位变了! 现在是【每 10 度航向差给多少 mm/s】。
+                                         取 100: 航向差 10 度 -> 转向量 100 mm/s
+                                                 -> Δv=200 -> ω=200/170=1.18rad/s=67度/秒
+                                          航向差 30 度 -> 转向量 300 mm/s(正好到上限)
+                                       ★ 这个值是用 W=0.17m 反算出来的, 不是试出来的 */
 #define LF_HEAD_KI          0       /* 内环积分: 先不用。调稳之后它可以补掉
                                        稳态航向差(转弯时阻尼造成的"追不上") */
 #define LF_HEAD_KD          0       /* 内环微分: 见上面。量化台阶上只会帮倒忙,
@@ -356,7 +340,10 @@
  *   弯道还是转反 / 转不动 -> 继续降: 6 -> 4 -> 2 -> 0(关掉)
  *   直道摆得明显了        -> 加回去: 6 -> 8 -> 10, 但要盯紧弯道
  *   传感器没接也没关系    -> 角速度恒为 0, 这一项自然失效, 不影响别的功能 */
-#define LF_GYRO_KD          6
+#define LF_GYRO_KD          150     /* ★ 单位也变了: 现在是 mm/s / (度/秒)。
+                                       取 150: 角速度 100 度/秒时给 150 mm/s 的阻尼量,
+                                       和上面"航向差 10 度给 100"是同一量级 ——
+                                       阻尼和修正势均力敌, 正是想要的比例。 */
 
 /* ★★ 死区: |error| 小于它就输出 0, 不做任何修正。★ 现在给 0 ★★
  *
@@ -399,20 +386,20 @@
  *
  * 注意 LF_MAX_STEER 不需要大于 LF_BASE_DUTY —— 超出的部分会被 lf_set_wheel()
  * 的硬顶截掉, 白给。取相等正好。 */
-#define LF_MAX_STEER        20      /* ★ 必须 >= LF_BASE_DUTY。
-                                       LF_BASE_DUTY 改成 20 之后这里也要跟到 20 ——
-                                       否则编译期检查会直接报错(实测踩到过),
-                                       而且就算能编过, 转弯力度也不够, 会冲过弯道。 */
+#define LF_MAX_STEER        300     /* 转向量上限, mm/s。★ 必须 >= LF_BASE_SPEED。
+                                       ★ 取相等正好: 这样慢轮最低能降到 0
+                                         (降到 0 就是"内侧轮停住", 转弯力度最大)。
+                                         再大也没用, 会被下面的限幅截掉。
+                                       ★ 按 W=0.17m 算: steer=300 时
+                                         Δv=600mm/s -> ω=600/170=3.5rad/s=202度/秒,
+                                         这是【行进中转弯】能达到的上限。 */
 
 /* 编译期检查: 参数配错了直接编译报错, 不要等到跑车才发现。 */
-#if (LF_BASE_DUTY > LF_MAX_DUTY)
-#error "LF_BASE_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
+#if (LF_LOST_SPEED > LF_BASE_SPEED)
+#error "LF_LOST_SPEED 不该大于 LF_BASE_SPEED: 丢线时是【降速】找线"
 #endif
-#if (LF_LOST_DUTY > LF_MAX_DUTY)
-#error "LF_LOST_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
-#endif
-#if (LF_MAX_STEER < LF_BASE_DUTY)
-#error "LF_MAX_STEER 必须 >= LF_BASE_DUTY: 否则慢的一侧降不到 0, 速度差上不去, 会冲过弯道"
+#if (LF_MAX_STEER < LF_BASE_SPEED)
+#error "LF_MAX_STEER 必须 >= LF_BASE_SPEED: 否则慢的一侧降不到 0, 速度差上不去, 会冲过弯道"
 #endif
 
 /* ============================================================================
@@ -454,10 +441,13 @@
  *   正常急弯会先被上面的 LF_CORNER_ERR 抓住, 走到这里的机会不多。 */
 #define LF_PIVOT_TRIGGER_MS 150U
 
-#define LF_PIVOT_DUTY       20      /* 原地转向时两个轮子的占空比(一正一反)。
-                                       ★ 调到 20(最高速度硬顶):
+#define LF_PIVOT_SPEED      300     /* 原地转向时两个轮子的速度(mm/s, 一正一反)。
+                                       ★ 取 300 = 和基础速度同量级:
                                          原地转向要克服的是【静摩擦】, 比滚动大得多,
-                                         16 时拧得慢, 转过 100° 要很久, 容易超时。 */
+                                         太小会"拧不动"、原地转向拖很久甚至超时。
+                                       ★ 速度环只是"要多少给多少", 它【不会】因为
+                                         静摩擦就多给 —— 真拧不动时 PI 会把占空比顶到 20,
+                                         所以这里给足速度是安全的。 */
 #define LF_PIVOT_OK         43      /* |error| <= 这个值就算"对准了", 结束转向。
                                        ★ 从 20 提到 43, 也就是把判据从"中间 1~2 路"
                                          放宽到"中间 4 路"。
@@ -535,8 +525,8 @@
 #if (LF_PIVOT_TRIGGER_MS >= LF_PIVOT_TRY_MS)
 #error "LF_PIVOT_TRIGGER_MS 必须小于 LF_PIVOT_TRY_MS"
 #endif
-#if (LF_PIVOT_DUTY > LF_MAX_DUTY)
-#error "LF_PIVOT_DUTY 超过了 LF_MAX_DUTY(最高速度硬顶)"
+#if (LF_PIVOT_SPEED < LF_BASE_SPEED)
+#error "LF_PIVOT_SPEED 不该小于 LF_BASE_SPEED: 原地转向要克服静摩擦, 得比行进时更有劲"
 #endif
 #if (LF_PIVOT_OK >= LF_CORNER_ERR)
 #error "LF_PIVOT_OK 必须小于 LF_CORNER_ERR: 否则\"还没判定成弯\"就已经算\"对准了\", 判据自相矛盾"
@@ -561,8 +551,6 @@ static uint8_t s_bits;              /* 最近一次灰度位图(1 = 压线, 已�
 static uint16_t s_raw[GRAYSCALE_SENSOR_CHANNELS];  /* 最近一次灰度的原始值(0/1) */
 static int16_t s_error;             /* 最近一次偏差 -100~+100 */
 static int16_t s_psi_ref;           /* 外环算出的目标航向(0.1度, 左转为正), 调试用 */
-static uint8_t s_left_duty;         /* 最近一次左轮占空比(调试用) */
-static uint8_t s_right_duty;        /* 最近一次右轮占空比(调试用) */
 static int8_t  s_last_dir;          /* 瞬时"上次往哪边拐"(只在丢线那几十毫秒用) */
 static uint16_t s_lost_ms;          /* 已经连续丢线多久(ms) */
 
@@ -666,44 +654,25 @@ static int16_t lf_calc_error(uint8_t bits, uint8_t *on_line)
 }
 
 /* ---------------------------------------------------------------------------
- *  让一个轮子转
- *      id      : 1 = A路, 2 = B路
- *      fwd_dir : 该轮"前进"对应的方向值(1 或 2)
- *      cmd     : 带符号的占空比
- *                  > 0  前进, 大小 = 占空比
- *                  < 0  后退(只有"原地转向"会用到)
- *                  = 0  停
+ *  让一个轮子按【速度】转 —— 现在这里只是个转发, 真正的闭环在 encoder.c
+ *      id    : 1 = A路, 2 = B路
+ *      speed : 带符号的速度, 单位 mm/s
+ *                  > 0  前进     < 0  后退     = 0  停
  *
- *  ★ 注意: 负数是【反转】, 不是停! 所以循迹的差速输出在传进来之前
- *    必须先自己夹到 0 以上(见 line_follow_step 里的限幅), 否则大偏差时
- *    慢的那一侧会突然倒转, 车会甩出去。
+ *  ★ 方向脚和占空比都不用这里管了: motor_speed_set() 会设方向,
+ *    占空比由速度 PI 决定。所以"哪个方向是前进"的定义也搬到了
+ *    encoder.c(MS_LEFT_FWD_DIR / MS_RIGHT_FWD_DIR), 全工程只有那一处。
+ *
+ *  ★ 但是"行进中不许倒转"这条限幅【保留】, 而且是在调用它的地方做的:
+ *    慢的那一侧突然反转, 车会甩出去 —— 倒转是"原地转向"才该干的事。
  * -------------------------------------------------------------------------*/
-static void lf_set_wheel(uint8_t id, uint8_t fwd_dir, int32_t cmd)
+static void lf_set_wheel(uint8_t id, int32_t speed)
 {
-    uint8_t dir;
+    /* ★ 最后一道保险: 不管上面怎么算, 这里卡住上下限 */
+    if (speed >  (int32_t)LF_MAX_STEER) { speed =  (int32_t)LF_MAX_STEER; }
+    if (speed < -(int32_t)LF_MAX_STEER) { speed = -(int32_t)LF_MAX_STEER; }
 
-    if (cmd == 0) {
-        motor_set_direction(id, 0U);            /* 方向脚清零 = 停 */
-        motor_set_duty(id, 0U);
-        return;
-    }
-
-    if (cmd > 0) {
-        dir = fwd_dir;                          /* 前进 */
-    } else {
-        /* 后退。motor.c 里方向只有 1 / 2 两个值, 取"另一个"就是反方向。
-         * (A路: 1 = 正转, 2 = 反转; B路: 2 = 正转, 1 = 反转)
-         * 如果以后给某一路加了别的方向定义, 这里要跟着改。 */
-        dir = (uint8_t)((fwd_dir == 1U) ? 2U : 1U);
-        cmd = -cmd;
-    }
-
-    /* ★ 最高速度的硬顶。所有往电机发的值都从这里过, 所以改了这里,
-     *   不管上面怎么算都不可能超速 —— 这是最后一道保险。 */
-    if (cmd > LF_MAX_DUTY) { cmd = LF_MAX_DUTY; }
-
-    motor_set_direction(id, dir);
-    motor_set_duty(id, (uint16_t)cmd);
+    motor_speed_set(id, speed);
 }
 
 /* ---------------------------------------------------------------------------
@@ -713,10 +682,8 @@ static void lf_set_wheel(uint8_t id, uint8_t fwd_dir, int32_t cmd)
  * -------------------------------------------------------------------------*/
 static void lf_stop_wheels(void)
 {
-    lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  0);
-    lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, 0);
-    s_left_duty  = 0U;
-    s_right_duty = 0U;
+    lf_set_wheel(LF_LEFT_ID,  0);
+    lf_set_wheel(LF_RIGHT_ID, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -726,18 +693,19 @@ static void lf_stop_wheels(void)
  * -------------------------------------------------------------------------*/
 static void lf_pivot(int8_t dir)
 {
-    int32_t d = (int32_t)LF_PIVOT_DUTY;
+    int32_t d = (int32_t)LF_PIVOT_SPEED;
 
+    /* ★ 现在这里是两个【明确相反的速度】, 由速度环保证它们真的是 ±d。
+     *   开环时代"一正一反"只是给了两个占空比, 实际转速受电池和地面影响;
+     *   现在原地转向的角速度是【可重复】的了 —— 这对
+     *   LF_PIVOT_MAX_DEG 那个角度判据很重要。 */
     if (dir > 0) {
-        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,   d);    /* 左轮前进 */
-        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, -d);    /* 右轮后退 */
+        lf_set_wheel(LF_LEFT_ID,   d);    /* 左轮前进 */
+        lf_set_wheel(LF_RIGHT_ID, -d);    /* 右轮后退 */
     } else {
-        lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  -d);    /* 左轮后退 */
-        lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR,  d);    /* 右轮前进 */
+        lf_set_wheel(LF_LEFT_ID,  -d);    /* 左轮后退 */
+        lf_set_wheel(LF_RIGHT_ID,  d);    /* 右轮前进 */
     }
-
-    s_left_duty  = (uint8_t)d;
-    s_right_duty = (uint8_t)d;
 }
 
 /* ============================================================================
@@ -758,8 +726,6 @@ void line_follow_init(void)
     s_running    = 0U;
     s_bits       = 0U;
     s_error      = 0;
-    s_left_duty  = 0U;
-    s_right_duty = 0U;
     s_last_dir   = 0;
     s_lost_ms    = 0U;
     s_dir_ev     = 0;
@@ -1005,7 +971,7 @@ void line_follow_step(void)
             s_corner_ms = 0U;
         }
 
-        base = LF_BASE_DUTY;
+        base = LF_BASE_SPEED;           /* ★ mm/s */
 
         /* ================= 外环: 位置误差 -> 目标航向 =================
          * 乘 LF_STEER_SIGN 是为了方便一键反方向(和单环时代的用法一致)。
@@ -1067,7 +1033,7 @@ void line_follow_step(void)
          *   现在按证据给量: s_dir_ev 满量程(±400)才给到 LF_MAX_STEER(±20),
          *   证据弱的时候就一点点修正 —— 小缺口直接开过去;
          *   真正的大弯(误差连续几拍顶到边上, 证据会攒满)照样给满舵。 */
-        base  = LF_LOST_DUTY;
+        base  = LF_LOST_SPEED;          /* ★ mm/s */
         steer = (int32_t)s_dir_ev / 20;
         if (steer >  LF_MAX_STEER) { steer =  LF_MAX_STEER; }
         if (steer < -LF_MAX_STEER) { steer = -LF_MAX_STEER; }
@@ -1090,25 +1056,28 @@ void line_follow_step(void)
         else if (steer < 0) { s_last_dir = -1; }
     }
 
-    /* ---------------- 第 3 步: 差速输出 ---------------- */
+    /* ---------------- 第 3 步: 差速输出(★ 单位是 mm/s) ----------------
+     *   左 = 基础 + steer, 右 = 基础 - steer
+     * ★ steer 现在就是【速度差的一半】: Δv = 左 - 右 = 2*steer,
+     *   而 ω = Δv / W。W = 0.17m —— 这就是"转向量到底能拐多快"的换算,
+     *   速度环让它第一次变成明确的值。 */
     left_cmd  = base + steer;       /* 线偏左时 steer<0 -> 左轮慢 */
     right_cmd = base - steer;       /*                    右轮快 */
 
-    /* 再补上"两个电机本身不一样"这一步。见 LF_TRIM 的说明。
-     * 一加一减, 平均速度不变, 只调左右出力的分配。 */
+    /* ★ LF_TRIM 保留着但是 0: 两个电机的差异现在由速度环自动拉平,
+     *   不需要手工偏置了。万一以后要临时加一点, 这里仍是一加一减,
+     *   平均速度不变, 只改左右出力的分配。 */
     left_cmd  -= LF_TRIM;
     right_cmd += LF_TRIM;
 
-    /* 限幅: 两边都不许倒转, 慢的一侧最多降到 0。
-     * (最基础版本先这么保守, 稳住不跑飞比较重要) */
+    /* ★ 限幅: 两边都不许倒转, 慢的一侧最多降到 0。
+     *   为什么保留这一条: 行进中让慢的那一侧反转, 车会猛地甩出去。
+     *   倒转是【原地转向】才该干的事(那里是故意一正一反的)。 */
     if (left_cmd  < 0) { left_cmd  = 0; }
     if (right_cmd < 0) { right_cmd = 0; }
 
-    lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  left_cmd);
-    lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, right_cmd);
-
-    s_left_duty  = (uint8_t)left_cmd;
-    s_right_duty = (uint8_t)right_cmd;
+    lf_set_wheel(LF_LEFT_ID,  left_cmd);
+    lf_set_wheel(LF_RIGHT_ID, right_cmd);
 }
 
 /* ============================================================================
@@ -1124,39 +1093,21 @@ void line_follow_get_raw(uint16_t *out)
     }
 }
 
-void line_follow_test_wheels(uint8_t duty)
-{
-    int32_t l, r;
-
-    if (duty == 0U) {
-        lf_stop_wheels();
-        return;
-    }
-
-    /* ★ 自检故意也带上 LF_TRIM:
-     *   两个轮子发的是【完全相同的指令】, 所以车如果拐弯, 唯一原因就是
-     *   两个电机本身的差异。于是 KEY2 就成了调 LF_TRIM 最快的工具。
-     *
-     * ★ duty 由调用者给(empty.c 里 KEY2 会一档一档往上加), 这样就能:
-     *   把车拿在手上, 一直按 KEY2 升档, 看哪一档两个轮子开始能【持续转动】,
-     *   那个值就是【电机启动死区】。LF_BASE_DUTY 必须明显高于它 ——
-     *   贴着死区会出现"速度调低反而左右摆得更凶"那种怪现象。 */
-    l = (int32_t)duty - LF_TRIM;
-    r = (int32_t)duty + LF_TRIM;
-    if (l < 0) { l = 0; }
-    if (r < 0) { r = 0; }
-
-    lf_set_wheel(LF_LEFT_ID,  LF_LEFT_FWD_DIR,  l);
-    lf_set_wheel(LF_RIGHT_ID, LF_RIGHT_FWD_DIR, r);
-
-    s_left_duty  = (uint8_t)l;
-    s_right_duty = (uint8_t)r;
-}
+/* ★ line_follow_test_wheels() 已经【删除】。
+ *   它原来是"给两个轮子同样的占空比"来自检 —— 那是开环时代的工具。
+ *   现在 KEY2 直接命令【速度】, 用的就是速度环本身(见 empty.c 的测试页),
+ *   比这个更直接: 两个轮子给同一个速度, 车还跑偏就是机械/编码器的问题。 */
 
 int16_t line_follow_get_error(void)      { return s_error; }
 uint8_t line_follow_get_bits(void)       { return s_bits; }
-uint8_t line_follow_get_left_duty(void)  { return s_left_duty; }
-uint8_t line_follow_get_right_duty(void) { return s_right_duty; }
+
+/* ★ 这两个现在返回【速度环实际给出的占空比】, 不再是"我们命令了多少"。
+ *   看它的意义变了: 它现在是一把尺子 ——
+ *       一直顶在 20 -> 说明 LF_BASE_SPEED 定高了, 占空比饱和了, 差速没余量
+ *       稳在 12~17  -> 健康
+ *   (命令值的单位已经是 mm/s 了, 屏幕上的 d1/d2 在 KEY2 测试页看) */
+uint8_t line_follow_get_left_duty(void)  { return (uint8_t)motor_speed_get_duty(LF_LEFT_ID); }
+uint8_t line_follow_get_right_duty(void) { return (uint8_t)motor_speed_get_duty(LF_RIGHT_ID); }
 
 /* 本次运行期间 error 到过的最小 / 最大值(没启动循迹时都是 0)。
  * 用于判断"摇摆"有多严重, 详见 s_e_min / s_e_max 的说明。 */
@@ -1193,16 +1144,18 @@ void line_follow_get_params(uint16_t *out)
 {
     if (out == 0) { return; }
 
-    out[LF_P_BASE]     = (uint16_t)LF_BASE_DUTY;
+    /* ★ 注意单位: 下面带 SPEED 字样的都是 mm/s; 别的页里 LF_P_MAX 现在
+     *   导出的也是转向量上限(mm/s), 因为占空比的硬顶已经搬到速度环里了。 */
+    out[LF_P_BASE]     = (uint16_t)LF_BASE_SPEED;
     out[LF_P_STEER]    = (uint16_t)LF_MAX_STEER;
-    out[LF_P_HEAD]     = (uint16_t)LF_HEAD_KP;      /* 内环: 航向差 -> 转向量 */
+    out[LF_P_HEAD]     = (uint16_t)LF_HEAD_KP;      /* 内环: 每 10 度航向差给多少 mm/s */
     out[LF_P_POS]      = (uint16_t)LF_POS_KP;       /* 外环: 位置误差 -> 目标航向 */
     out[LF_P_DEADBAND] = (uint16_t)LF_DEADBAND;
     out[LF_P_TRIM]     = (uint16_t)((int16_t)LF_TRIM);      /* 可能为负, 调用者按符号解释 */
-    out[LF_P_LOST]     = (uint16_t)LF_LOST_DUTY;
-    out[LF_P_MAX]      = (uint16_t)LF_MAX_DUTY;
+    out[LF_P_LOST]     = (uint16_t)LF_LOST_SPEED;
+    out[LF_P_MAX]      = (uint16_t)LF_MAX_STEER;    /* 已改为"转向量上限 mm/s" */
     out[LF_P_PIV_TRIG] = (uint16_t)LF_PIVOT_TRIGGER_MS;
-    out[LF_P_PIV_DUTY] = (uint16_t)LF_PIVOT_DUTY;
+    out[LF_P_PIV_DUTY] = (uint16_t)LF_PIVOT_SPEED;  /* 已改为"原地转向速度 mm/s" */
     out[LF_P_PIV_OK]   = (uint16_t)LF_PIVOT_OK;
     out[LF_P_CORNER]   = (uint16_t)LF_CORNER_ERR;
     out[LF_P_GYRO]     = (uint16_t)((int16_t)LF_GYRO_KD);   /* 可能为负 */

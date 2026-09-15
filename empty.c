@@ -8,7 +8,7 @@
  *   验证 1: 前进方向对不对
  *      按 KEY2 -> 两个轮子都往"前"转(推力应该推着车往前走), 再按一次停。
  *      如果某个轮子反转了, 改 system/line_follow.c 里的
- *      LF_LEFT_FWD_DIR / LF_RIGHT_FWD_DIR。
+ *      改 hardware/encoder.c 里的 MS_LEFT_FWD_DIR / MS_RIGHT_FWD_DIR。
  *
  *   验证 2: 转向极性对不对(最关键的一步!)
  *      桌上贴一条黑胶带当线, 车拿在手上, 让传感器对着那条线。
@@ -64,14 +64,16 @@
  *
  *  【速度/参数在哪改】
  *      全部在 system/line_follow.c 最上面那一块 "可调参数":
- *          LF_MAX_DUTY      ★ 最高速度硬顶(任何一轮都不许超过)  20
- *          LF_BASE_DUTY     直行基础速度                      20
+ *          ★★★ 现在这些速度类的数都是【mm/s】, 不是占空比了 ★★★
+ *              (电机已上【速度闭环】, 见 hardware/encoder.h)
+ *          LF_BASE_SPEED    直行基础速度(mm/s)               300
+ *                            ★ 必须台架试一次: 按 KEY2 看稳定后的 d1/d2,
+ *                              合理值 12~17; 一直顶 20 = 定高了, 往下调
  *                           ★ 必须明显高于电机启动死区, 否则左右摆!
  *                             速度调低反而摆得更厉害 = 这个原因
- *          LF_LOST_DUTY     丢线找线速度                      16
- *          (KEY2 现在是一档一档升(见上), LF_TEST_DUTY 只作参考上限)
- *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度               20
- *                           ★★ 必须 >= LF_BASE_DUTY, 理由见文件里的推导:
+ *          LF_LOST_SPEED    丢线找线速度(mm/s)               250
+ *          LF_MAX_STEER     ★ 转向量上限 = 转弯力度(mm/s)         300
+ *                           ★★ 必须 >= LF_BASE_SPEED, 理由见文件里的推导:
  *                             它决定"慢的一侧能降到多低", 降不到 0 就转不过弯
  *          ★★ 双环(航向环) —— 现在的主力调参就是前面这两个 ★★
  *          LF_POS_KP        外环: 位置误差 -> 目标航向(0.1度/格)    2
@@ -94,7 +96,7 @@
  *
  *          --- 弯道: 停车原地转向再前进 ---
  *          LF_PIVOT_TRIGGER_MS  连续丢线多久判定"到弯节点"    150
- *          LF_PIVOT_DUTY        原地转向的占空比(一正一反)      20
+ *          LF_PIVOT_SPEED       原地转向的速度(mm/s, 一正一反) 300
  *          LF_PIVOT_OK          |误差| 小于它就算"对准了"        43
  *                               ★ 从 20 放宽到 43: 原地转向是全车最快的旋转,
  *                                 窗口太窄线会整段穿过去抓不到 -> 一直转、找不到线
@@ -108,9 +110,9 @@
  *                               (两个方向合计 1.8 秒封顶)
  *
  *      ★ 约束(违反了直接编译报错, 不会等跑车才发现):
- *          LF_BASE_DUTY <= LF_MAX_DUTY
- *          LF_LOST_DUTY <= LF_MAX_DUTY
- *          LF_MAX_STEER >= LF_BASE_DUTY      <- 转弯力度靠这条
+ *          LF_LOST_SPEED <= LF_BASE_SPEED
+ *          LF_MAX_STEER >= LF_BASE_SPEED     <- 转弯力度靠这条
+ *          LF_PIVOT_SPEED >= LF_BASE_SPEED
  *          LF_STEER_SIGN    转向极性 +1 / -1            默认 +1
  *          LF_LINE_LEVEL    灰度"压线"判定电平           默认 1
  *          LF_LEFT/RIGHT_FWD_DIR  两轮"前进"方向值       1 / 2
@@ -502,41 +504,42 @@ static void show_params(void)
 
     line_follow_get_params(p);
 
+    /* ★★ 数值全部改成 3 位: 速度类参数现在是 mm/s, 是三位数(如 300) ★★
+     *   BASE/ST = 基础速度 / 转向量上限(mm/s)
+     *   POS/HED = 外环 / 内环增益      TRIM = 左右补偿(已置 0, 闭环接管) */
     OLED_Clear();
     OLED_ShowString(0, 0, (u8 *)"BASE", 12);
-    OLED_ShowNum(36, 0, p[LF_P_BASE], 2, 12);
+    OLED_ShowNum(30, 0, p[LF_P_BASE], 3, 12);
     OLED_ShowString(66, 0, (u8 *)"ST", 12);
-    OLED_ShowNum(102, 0, p[LF_P_STEER], 2, 12);
+    OLED_ShowNum(90, 0, p[LF_P_STEER], 3, 12);
 
-    /* ★ 双环的两个主要增益: 调参就是调这两个
-     *   POS = 外环(位置误差 -> 目标航向)  HED = 内环(航向差 -> 转向量) */
     OLED_ShowString(0, 13, (u8 *)"POS", 12);
-    OLED_ShowNum(36, 13, p[LF_P_POS], 2, 12);
+    OLED_ShowNum(30, 13, p[LF_P_POS], 3, 12);
     OLED_ShowString(66, 13, (u8 *)"HED", 12);
-    OLED_ShowNum(102, 13, p[LF_P_HEAD], 2, 12);
+    OLED_ShowNum(90, 13, p[LF_P_HEAD], 3, 12);
 
     OLED_ShowString(0, 26, (u8 *)"TRIM", 12);
     t = (int16_t)p[LF_P_TRIM];              /* 可能是负数, 要带符号画 */
-    OLED_ShowChar(36, 26, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    OLED_ShowChar(30, 26, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
     if (t < 0) { t = (int16_t)(-t); }
-    OLED_ShowNum(42, 26, (u32)t, 2, 12);
+    OLED_ShowNum(36, 26, (u32)t, 2, 12);
     OLED_ShowString(66, 26, (u8 *)"CNR", 12);       /* 急弯判据: 过弯冲过头的关键 */
-    OLED_ShowNum(102, 26, p[LF_P_CORNER], 2, 12);
+    OLED_ShowNum(90, 26, p[LF_P_CORNER], 3, 12);
 
     OLED_ShowString(0, 39, (u8 *)"PIV", 12);
-    OLED_ShowNum(36, 39, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
+    OLED_ShowNum(30, 39, p[LF_P_PIV_TRIG], 3, 12);      /* 丢线多久判定到弯节点 */
 
-    /* 陀螺仪阻尼(带符号, 治左右摆尾)。
+    /* 陀螺仪阻尼(带符号, 治左右摆尾)。单位已变成 mm/s/(度/秒)。
      * ★ 符号【已实测确认】: 车头往左转 -> 状态页 R: 显示为正 -> 这里取正号。 */
     OLED_ShowString(66, 39, (u8 *)"GY", 12);
     t = (int16_t)p[LF_P_GYRO];
-    OLED_ShowChar(102, 39, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
+    OLED_ShowChar(90, 39, (u8)((t < 0) ? (u8)-'-' : (u8)'+'), 12);
     if (t < 0) { t = (int16_t)(-t); }
-    OLED_ShowNum(108, 39, (u32)t, 2, 12);
+    OLED_ShowNum(96, 39, (u32)t, 3, 12);
 
-    /* 原地转向占空比: 弯道原地转要克服静摩擦, 调小了拧不动、容易超时 */
-    OLED_ShowString(0, 52, (u8 *)"PD", 12);
-    OLED_ShowNum(36, 52, p[LF_P_PIV_DUTY], 2, 12);
+    /* 原地转向速度(mm/s): 弯道原地转要克服静摩擦, 调小了拧不动、容易超时 */
+    OLED_ShowString(0, 52, (u8 *)"PSPD", 12);
+    OLED_ShowNum(30, 52, p[LF_P_PIV_DUTY], 3, 12);
 
     /* 陀螺仪在不在、用的哪个地址 —— 画在屏幕上, 不用看串口。
      * MPU:68 / MPU:69 都算正常(只是模块 AD0 脚接法不同), MPU:NO 才是没接上。 */
@@ -694,10 +697,10 @@ int main(void)
             if (line_follow_is_running()) {
                 line_follow_stop();
             } else {
-                /* ★★ 开始循迹之前【必须】把电机的控制权从速度环收回来 ★★
-                 *   否则两边都在写同一个电机: 速度环会按它自己的目标去给占空比,
-                 *   把 line_follow 算出来的差速直接覆盖掉, 表现就是"车不听使唤"。 */
-                motor_speed_disable();
+                /* ★★ 注意: 这里【不能】再调 motor_speed_disable() ★★
+                 *   循迹现在【就是】通过速度环输出电机的(命令单位 mm/s),
+                 *   把它关掉车就不动了。
+                 *   (上一版是开环占空比时才需要"交还控制权", 那一步已经作废) */
                 line_follow_start();
             }
             show_status();

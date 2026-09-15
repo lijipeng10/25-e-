@@ -133,6 +133,7 @@
 #include "grayscale_sensor.h"   /* Grayscale_Sensor_Init / GRAYSCALE_SENSOR_CHANNELS */
 #include "oled.h"               /* OLED_Init / OLED_ShowString / OLED_Refresh */
 #include "mpu6050.h"            /* mpu6050_ping / init / update / get_rate_x10 */
+#include "encoder.h"            /* 轮速闭环: motor_speed_init/set/update/get */
 
 /* ---- 循迹控制 ---- */
 #include "line_follow.h"
@@ -176,7 +177,12 @@ static uint8_t s_test_mode = 0U;    /* KEY2 的电机自检开关(0 = 关) */
 
 /* KEY2 的占空比档位, 每按一次升一档, 到头回到 0。
  * 用来量【电机启动死区】: 手拿着车一直按, 看哪一档轮子开始能持续转动。 */
-static const uint8_t k_test_levels[] = { 0U, 10U, 12U, 14U, 16U, 18U, 20U };
+/* ★ 已经是【速度(mm/s)】了, 不再是占空比档位。
+ *   原来那组 (0,10,...,20) 是用来量"电机启动死区"的 —— 上了速度闭环之后
+ *   死区由 PI 自己顶过去, 不用再手量。现在这一组是用来【验收闭环】的:
+ *   命令多少, 屏幕上实测就该是多少。
+ *   ★ 类型是 uint16_t: 600 装不进 uint8_t。 */
+static const uint16_t k_test_levels[] = { 0U, 100U, 200U, 300U, 400U, 500U, 600U };
 static uint8_t s_test_idx = 0U;     /* 当前在第几档 */
 
 /* MPU6050 探测结果: 0 = 没找到; 0x68 / 0x69 = 找到的从机地址。
@@ -360,14 +366,58 @@ static void show_raw(u8 x, u8 y, const uint16_t *raw, u8 size)
     }
 }
 
+/* ---------------------------------------------------------------------------
+ *  电机速度环测试页(按 KEY2 进入) —— 这就是闭环的验收工具
+ * ---------------------------------------------------------------------------
+ *  显示每轮的【目标速度】和【实测速度】(mm/s), 以及 PI 给出的占空比。
+ *  怎么看:
+ *      目标 300 -> 实测应该稳在 300 附近(差几十是正常的, 看趋势会不会收敛)
+ *      命令 0  -> 占空比也应该是 0, 轮子停住
+ *      占空比会自己变 -> 那就是闭环在顶着死区、在补电池电压, 正是要的效果
+ *  ★ 两个轮子给的是同一个目标速度, 所以实测的差异 = 真实机械/编码器差异。
+ * -------------------------------------------------------------------------*/
+static void show_test(void)
+{
+    OLED_ShowString(0, 0, (u8 *)"LF:TEST", 16);
+    OLED_ShowNum(104, 0, s_test_idx, 1, 16);        /* 当前是第几档 */
+
+    /* 1 号轮: 目标 和 实测 */
+    OLED_ShowString(0, 16, (u8 *)"1>", 12);
+    show_signed3(12, 16, (int16_t)motor_speed_get_target(1U), 12);
+    OLED_ShowString(48, 16, (u8 *)"m", 12);
+    show_signed3(60, 16, (int16_t)motor_speed_get(1U), 12);
+
+    /* 2 号轮: 目标 和 实测 */
+    OLED_ShowString(0, 28, (u8 *)"2>", 12);
+    show_signed3(12, 28, (int16_t)motor_speed_get_target(2U), 12);
+    OLED_ShowString(48, 28, (u8 *)"m", 12);
+    show_signed3(60, 28, (int16_t)motor_speed_get(2U), 12);
+
+    /* PI 给出的占空比 —— 这一行最能说明"闭环在干活" */
+    OLED_ShowString(0, 40, (u8 *)"d1", 12);
+    OLED_ShowNum(18, 40, motor_speed_get_duty(1U), 2, 12);
+    OLED_ShowString(48, 40, (u8 *)"d2", 12);
+    OLED_ShowNum(66, 40, motor_speed_get_duty(2U), 2, 12);
+
+    /* 本模块是否正在驱动电机(1 = 在驱动) */
+    OLED_ShowString(0, 52, (u8 *)"ACT", 12);
+    OLED_ShowNum(24, 52, motor_speed_is_active(), 1, 12);
+
+    OLED_Refresh();
+}
+
 static void show_status(void)
 {
     uint16_t raw[GRAYSCALE_SENSOR_CHANNELS];
 
-    /* 状态行: 一眼就能看出车现在在干什么 */
+    /* ★ KEY2 测试模式: 换成电机速度环那一页, 不再画循迹的数据 */
     if (s_test_mode != 0U) {
-        OLED_ShowString(0, 0, (u8 *)"LF:TEST ", 16);
-    } else if (line_follow_is_pivoting()) {
+        show_test();
+        return;
+    }
+
+    /* 状态行: 一眼就能看出车现在在干什么 */
+    if (line_follow_is_pivoting()) {
         OLED_ShowString(0, 0, (u8 *)"LF:PIVOT", 16);   /* 弯道: 原地转向中 */
     } else if (line_follow_is_running()) {
         OLED_ShowString(0, 0, (u8 *)"LF:RUN  ", 16);
@@ -571,6 +621,12 @@ int main(void)
     DBG_MSG("[2] tick/key/motor/grayscale/OLED OK\r\n");
 
     line_follow_init();
+
+    /* ★ 轮速闭环初始化: 清计数、建 PID、清中断标志、开 NVIC(GROUP1)。
+     *   ★ 它默认【不激活】—— 上电后电机还是由 line_follow 用占空比控制;
+     *     本模块只有在 motor_speed_set() 被调用之后才会去写电机。
+     *   ★ 必须放在 SYSCFG_DL_init() 之后: 引脚和中断得先配好。 */
+    motor_speed_init();
     DBG_MSG("[3] line_follow OK -> entering main loop\r\n");
 
     /* ======================= 3. 陀螺仪(用于循迹的阻尼项) =======================
@@ -638,6 +694,10 @@ int main(void)
             if (line_follow_is_running()) {
                 line_follow_stop();
             } else {
+                /* ★★ 开始循迹之前【必须】把电机的控制权从速度环收回来 ★★
+                 *   否则两边都在写同一个电机: 速度环会按它自己的目标去给占空比,
+                 *   把 line_follow 算出来的差速直接覆盖掉, 表现就是"车不听使唤"。 */
+                motor_speed_disable();
                 line_follow_start();
             }
             show_status();
@@ -664,16 +724,22 @@ int main(void)
                 s_test_idx = 0U;
             }
             s_test_mode = (uint8_t)((k_test_levels[s_test_idx] != 0U) ? 1U : 0U);
-            line_follow_test_wheels(k_test_levels[s_test_idx]);
+
+            /* ★ 现在是【命令速度】, 不是直接给占空比 —— 占空比交给速度环自己算。
+             *   两个轮子给的是【同一个速度】, 所以车如果还跑偏, 那就只剩
+             *   机械和编码器的问题了(两个电机的差异已经被闭环拉平)。 */
+            motor_speed_set(1U, (int32_t)k_test_levels[s_test_idx]);
+            motor_speed_set(2U, (int32_t)k_test_levels[s_test_idx]);
             show_status();
 
             /* 打一行出来, 免得只靠屏幕看 */
-            buf[0] = (char)('0' + k_test_levels[s_test_idx] / 10U);
-            buf[1] = (char)('0' + k_test_levels[s_test_idx] % 10U);
-            buf[2] = 0;
-            DBG_MSG("[KEY2] motor test duty ");
+            buf[0] = (char)('0' + (k_test_levels[s_test_idx] / 100U) % 10U);
+            buf[1] = (char)('0' + (k_test_levels[s_test_idx] / 10U) % 10U);
+            buf[2] = (char)('0' + (k_test_levels[s_test_idx]) % 10U);
+            buf[3] = 0;
+            DBG_MSG("[KEY2] speed target ");
             DBG_MSG(buf);
-            DBG_MSG("%\r\n");
+            DBG_MSG(" mm/s\r\n");
         }
 
         /* ---------------- 每 10ms: 循迹控制 ---------------- */
@@ -683,6 +749,9 @@ int main(void)
             /* ★ 先更新陀螺仪再跑循迹: 阻尼项要用【这一拍】的角速度。
              *   传感器没接时这个函数会直接返回, 开销极小。 */
             mpu6050_update();
+            /* ★ 速度环: 内部按 MS_LOOP_MS(20ms) 自己分频。
+             *   没被 motor_speed_set() 激活时它直接返回, 不会和 line_follow 抢电机。 */
+            motor_speed_update();
             line_follow_step();
         }
 

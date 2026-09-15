@@ -1,5 +1,18 @@
 #include "sm_encoder.h"
 #include "ti_msp_dl_config.h"
+#include "encoder.h"            /* ★ 轮速编码器的计数也走这个 GROUP1 向量 */
+
+/* ★★ GPIOA / GPIOB 的中断共用 IRQ 1, 也就是都进 GROUP1_IRQHandler ★★
+ *
+ * SysConfig 会把"同一个中断组里注册了中断的多个 GPIO 模块"合并成一个组,
+ * 生成的名字形如 GPIO_MULTIPLE_GPIOA_INT_IRQN —— 它其实就是 GPIOA_INT_IRQn。
+ *
+ * ★ 坑(实测踩到): 这个【名字】会随 syscfg 里"哪些模块开了中断"而变 ——
+ *   原来只有云台编码器开中断时它叫 sm_motor_encoder_GPIOA_INT_IRQN,
+ *   给轮速编码器(E1A/E2A)也开中断之后, 名字变成了 GPIO_MULTIPLE_*,
+ *   于是本文件第 99~102 行直接编译失败。
+ * ★ 所以不要绑这个名字, 直接用芯片头文件里的 IRQ 号(它不会变)。
+ *   ENC_GPIO_IRQN 定义在 hardware/encoder.h 里(本文件已经 include 了)。 */
 
 /* MT6816: 1000 线 x 四倍频 = 4096 计数/圈 */
 #define ENC_COUNTS_PER_REV   4000U
@@ -50,40 +63,44 @@ static void enc_step(uint8_t axis)
 }
 
 /* ---------------------------------------------------------------------------
- * GPIO 中断服务(GROUP1)
- *  GPIOB: A1(双沿), Z1(上升), B2(双沿), Z2(上升)
- *  GPIOA: B1(双沿), A2(双沿)
+ * GPIO 中断服务(GROUP1) —— 云台编码器 + 轮速编码器
+ *  云台:  A1(PA15), B1(PA17), Z1(PA30), A2(PB22), B2(PB1), Z2(PA7)
+ *  轮速:  E1A(PB20), E2A(PA25)      <- 循迹速度闭环用
+ *
+ * ★★ 这里必须【把两个端口的全部已使能标志都读出来, 处理完再全部清掉】★★
+ *   原来是用掩码只读自己关心的那几位。这在只有云台编码器开了中断时没问题,
+ *   但只要【再多一个模块】在同一个端口上开中断, 那些新位就永远清不掉 ——
+ *   退出中断后它立刻再次触发 -> 中断反复重进 -> 表现就是"车卡死/跑不动"。
+ *   这个坑很隐蔽: 编译没问题, 一烧进去就死。
+ *   (实测: 给 E1A/E2A 打开中断时, 正是踩在这一条上)
  * -------------------------------------------------------------------------*/
 void GROUP1_IRQHandler(void)
 {
-    uint32_t sta;
+    uint32_t sta_a, sta_b;
 
     s_isr_count++;
 
-    /* GPIOB */
-    sta = DL_GPIO_getEnabledInterruptStatus(GPIOB,
-                sm_motor_encoder_A1_PIN | sm_motor_encoder_Z1_PIN |
-                sm_motor_encoder_B2_PIN | sm_motor_encoder_Z2_PIN);
-    if (sta != 0U) {
-        if (sta & sm_motor_encoder_A1_PIN) enc_step(0U);
-        if (sta & sm_motor_encoder_B2_PIN) enc_step(1U);
-        if (sta & sm_motor_encoder_Z1_PIN) {
-            s_enc[0].count = 0; s_enc[0].zero_seen = 1U;
-        }
-        if (sta & sm_motor_encoder_Z2_PIN) {
-            s_enc[1].count = 0; s_enc[1].zero_seen = 1U;
-        }
-        DL_GPIO_clearInterruptStatus(GPIOB, sta);
-    }
+    sta_a = DL_GPIO_getEnabledInterruptStatus(GPIOA, 0xFFFFFFFFU);
+    sta_b = DL_GPIO_getEnabledInterruptStatus(GPIOB, 0xFFFFFFFFU);
 
-    /* GPIOA */
-    sta = DL_GPIO_getEnabledInterruptStatus(GPIOA,
-                sm_motor_encoder_B1_PIN | sm_motor_encoder_A2_PIN);
-    if (sta != 0U) {
-        if (sta & sm_motor_encoder_B1_PIN) enc_step(0U);
-        if (sta & sm_motor_encoder_A2_PIN) enc_step(1U);
-        DL_GPIO_clearInterruptStatus(GPIOA, sta);
+    /* --- 云台编码器(当前未接入主循环, 但标志必须照清) --- */
+    if ((sta_b & sm_motor_encoder_A1_PIN) != 0U) enc_step(0U);
+    if ((sta_b & sm_motor_encoder_B2_PIN) != 0U) enc_step(1U);
+    if ((sta_b & sm_motor_encoder_Z1_PIN) != 0U) {
+        s_enc[0].count = 0; s_enc[0].zero_seen = 1U;
     }
+    if ((sta_b & sm_motor_encoder_Z2_PIN) != 0U) {
+        s_enc[1].count = 0; s_enc[1].zero_seen = 1U;
+    }
+    if ((sta_a & sm_motor_encoder_B1_PIN) != 0U) enc_step(0U);
+    if ((sta_a & sm_motor_encoder_A2_PIN) != 0U) enc_step(1U);
+
+    /* --- ★ 轮速编码器: 只数 A 相的边沿(方向由命令决定, 不用 B 相) --- */
+    motor_speed_isr(sta_a, sta_b);
+
+    /* --- ★ 最后把读到的标志全部清掉, 一个都不留 --- */
+    if (sta_a != 0U) { DL_GPIO_clearInterruptStatus(GPIOA, sta_a); }
+    if (sta_b != 0U) { DL_GPIO_clearInterruptStatus(GPIOB, sta_b); }
 }
 
 /* ---------------------------------------------------------------------------
@@ -96,10 +113,10 @@ void encoder_init(void)
     s_enc[1].count = 0; s_enc[1].prev = 0; s_enc[1].zero_seen = 0;
     s_enc[1].last_sample = 0; s_enc[1].rpm = 0;
 
-    NVIC_ClearPendingIRQ(sm_motor_encoder_GPIOA_INT_IRQN);
-    NVIC_EnableIRQ(sm_motor_encoder_GPIOA_INT_IRQN);
-    NVIC_ClearPendingIRQ(sm_motor_encoder_GPIOB_INT_IRQN);
-    NVIC_EnableIRQ(sm_motor_encoder_GPIOB_INT_IRQN);
+    /* ★ 用 ENC_GPIO_IRQN 而不是 SysConfig 那个会变的名字, 见文件开头说明。
+     *   GPIOA 和 GPIOB 本来就是同一个 IRQ 1, 使能一次两边都通。 */
+    NVIC_ClearPendingIRQ(ENC_GPIO_IRQN);
+    NVIC_EnableIRQ(ENC_GPIO_IRQN);
 }
 
 int32_t encoder_get_count(uint8_t axis)

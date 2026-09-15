@@ -18,6 +18,10 @@ void    motor_speed_update(void);
 void    motor_speed_set(uint8_t id, int32_t mm_s);
 void    motor_speed_stop(uint8_t id);
 void    motor_speed_disable(void);
+/* ★ 编码器故障标志: 命令有速度但实测一直≈0 时置1, 并且【已经把该轮占空比切到0】。
+ *   用来防"编码器没接好 -> PI 以为是0 -> 积分顶到满占空比 -> 车突然全速冲出去" */
+uint8_t  motor_speed_get_fault(uint8_t id);
+
 int32_t  motor_speed_get(uint8_t id);         /* 实测速度 mm/s */
 int32_t  motor_speed_get_target(uint8_t id);  /* 目标速度 mm/s */
 uint16_t motor_speed_get_duty(uint8_t id);    /* PI 给出的占空比 */

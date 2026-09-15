@@ -16,6 +16,8 @@
 #define MS_MAX_DUTY         20          /* 占空比硬顶, 和以前开环的基础速度一致 -> 不可能跑飞 */
 #define MS_MAX_MM_S         900         /* 目标速度上限(防误传) */
 #define MS_LOOP_MS          20U         /* 速度环周期 ms, 太小低速档不够计数 */
+#define MS_FAULT_MM_S       60          /* 目标超过它才做故障检查(太慢时读数本来就近0) */
+#define MS_FAULT_MS         800U        /* 连续这么久"命令有速度但实测≈0" -> 判编码器坏 */
 
 /* ★★ 前进方向 —— 已按"电机改到后轮"互换过 ★★
  * 上电验证: KEY2 给正速度, 车应该【前进】。反了就再把这两个换回来。 */
@@ -32,6 +34,8 @@ static volatile int8_t  s_dir[2];
 static uint16_t s_duty[2];
 static uint32_t s_last_ms;
 static uint8_t  s_active;
+static uint16_t s_fault_ms[2];          /* "命令有速度但实测≈0"已经持续多久 */
+static uint8_t  s_fault[2];             /* 1 = 编码器故障, 该轮已切断输出 */
 
 void motor_speed_isr(uint32_t sta_gpioa, uint32_t sta_gpiob)
 {
@@ -44,6 +48,7 @@ void motor_speed_init(void)
     uint8_t i;
     for (i = 0U; i < 2U; i++) {
         s_count[i] = 0; s_target[i] = 0; s_meas[i] = 0; s_dir[i] = 0; s_duty[i] = 0U;
+        s_fault_ms[i] = 0U; s_fault[i] = 0U;
         pid_init(&s_pid[i], MS_KP, MS_KI, 0, 100, MS_I_CLAMP, MS_MAX_DUTY, 0, MS_LOOP_MS);
     }
     s_last_ms = 0U;
@@ -64,6 +69,7 @@ void motor_speed_set(uint8_t id, int32_t mm_s)
 
     if (mm_s == 0) {
         s_target[idx] = 0; s_dir[idx] = 0; s_duty[idx] = 0U;
+        s_fault_ms[idx] = 0U; s_fault[idx] = 0U;   /* 停了就清故障, 下次重试 */
         pid_reset(&s_pid[idx]);
         motor_set_direction(id, 0U);
         motor_set_duty(id, 0U);
@@ -123,6 +129,23 @@ void motor_speed_update(void)
         if (s_dir[i] < 0) { mm_s = -mm_s; }   /* 符号来自命令方向 */
         s_meas[i] = mm_s;
 
+        /* ★★ 编码器故障保护 ★★
+         * 命令有速度、实测却一直是 0 -> 编码器根本没在计数(线没接好/中断没来)。
+         * 这时 PI 会把占空比一路顶到 20, 表现就是"一给速度就全速冲出去"。
+         * 所以: 切断该轮输出 + 置故障标志, 让人一眼看出是编码器的问题。 */
+        if ((s_target[i] > MS_FAULT_MM_S) && ((mm_s > -20) && (mm_s < 20))) {
+            if (s_fault_ms[i] < 60000U) { s_fault_ms[i] += (uint16_t)dt; }
+        } else {
+            s_fault_ms[i] = 0U;
+        }
+        if (s_fault_ms[i] >= MS_FAULT_MS) { s_fault[i] = 1U; }
+
+        if (s_fault[i] != 0U) {
+            s_duty[i] = 0U;
+            motor_set_duty((uint8_t)(i + 1U), 0U);
+            continue;
+        }
+
         /* ★ 前馈基准 + PI: 前馈直接跳过死区, PI 只补差值 —— 比纯积分快得多 */
         out = (int32_t)MS_BASE_DUTY + pid_compute(&s_pid[i], s_target[i], mm_s, dt);
         if (out < 0) { out = 0; }
@@ -137,3 +160,4 @@ int32_t  motor_speed_get(uint8_t id)        { return ((id >= 1U) && (id <= 2U)) 
 int32_t  motor_speed_get_target(uint8_t id) { return ((id >= 1U) && (id <= 2U)) ? s_target[id - 1U] : 0; }
 uint16_t motor_speed_get_duty(uint8_t id)   { return ((id >= 1U) && (id <= 2U)) ? s_duty[id - 1U] : 0U; }
 uint8_t  motor_speed_is_active(void)        { return s_active; }
+uint8_t  motor_speed_get_fault(uint8_t id)  { return ((id >= 1U) && (id <= 2U)) ? s_fault[id - 1U] : 0U; }

@@ -401,9 +401,16 @@ static void show_test(void)
     OLED_ShowString(48, 40, (u8 *)"d2", 12);
     OLED_ShowNum(66, 40, motor_speed_get_duty(2U), 2, 12);
 
-    /* 本模块是否正在驱动电机(1 = 在驱动) */
+    /* ACT = 本模块在驱动; ERR = 编码器故障(命令有速度但实测≈0, 已切断该轮输出)
+     * ★ 看到 ERR 就是【编码器没在计数】, 别怀疑参数 —— 先查接线/中断。 */
     OLED_ShowString(0, 52, (u8 *)"ACT", 12);
     OLED_ShowNum(24, 52, motor_speed_is_active(), 1, 12);
+    if ((motor_speed_get_fault(1U) != 0U) || (motor_speed_get_fault(2U) != 0U)) {
+        OLED_ShowString(48, 52, (u8 *)"1", 12);
+        OLED_ShowString(54, 52, (u8 *)"ERR", 12);
+        OLED_ShowNum(72, 52, motor_speed_get_fault(1U), 1, 12);
+        OLED_ShowNum(84, 52, motor_speed_get_fault(2U), 1, 12);
+    }
 
     OLED_Refresh();
 }

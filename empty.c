@@ -41,25 +41,14 @@ static const uint16_t k_levels[] = { 0U, 100U, 200U, 300U, 400U, 500U, 600U };
 #define LEVEL_N     (sizeof(k_levels) / sizeof(k_levels[0]))
 static uint8_t s_lvl = 0U;
 
-/* ---------------- 串口打点(异常报告用, 带超时) ---------------- */
-static void fault_putc(char c)
-{
-    uint32_t guard = 20000U;
-    while (DL_UART_isBusy(PC_uart_INST) && (guard != 0U)) { guard--; }
-    DL_UART_transmitData(PC_uart_INST, (uint8_t)c);
-}
-static void fault_puts(const char *s) { while (*s != 0) { fault_putc(*s++); } }
-
+/* ---------------- 异常兜底: 只在屏幕上显示 ★ 不打串口 ★ ---------------- */
 static void fault_report(const char *name)
 {
-    fault_puts("\r\n!!! ");
-    fault_puts(name);
-    fault_puts(" !!!\r\n");
     OLED_Clear();
     OLED_ShowString(0,  0, (u8 *)"!! FAULT !!", 16);
     OLED_ShowString(0, 24, (u8 *)name,          16);
     OLED_Refresh();
-    while (1) { }
+    while (1) { }               /* 停住, 让人能看清 */
 }
 void NMI_Handler(void)       { fault_report("NMI"); }
 void HardFault_Handler(void) { fault_report("HARDFAULT"); }
@@ -124,14 +113,12 @@ int main(void)
     uint32_t last_disp;
 
     SYSCFG_DL_init();
-    fault_puts("\r\n[1] SYSCFG_DL_init OK\r\n");
 
     tick_init();
     key_init();
     OLED_Init();
 
     motor_speed_init();                 /* 速度环: 清计数 + 开 GROUP1 中断 */
-    fault_puts("[2] speed loop init OK\r\n");
 
     set_level(0U);                      /* 上电先停着 */
     delay_ms(300);

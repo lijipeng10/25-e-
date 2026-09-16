@@ -7,6 +7,7 @@
 #include "tick.h"           /* tick_init / tick_get_ms */
 #include "grayscale_sensor.h"   /* Grayscale_Sensor_Init / Grayscale_Sensor_Read_All */
 #include "mpu6050.h"            /* mpu6050_ping / mpu6050_init / mpu6050_update */
+#include "line_follow.h"        /* line_follow_init / line_follow_step / line_follow_get_* */
 
 uint8_t keynum;
 extern uint32_t encoder_1_A;
@@ -50,6 +51,7 @@ static void show_signed3(u8 x, u8 y, int32_t v)
 
 /* MPU6050 必须固定 10ms 更新一次: 它内部按 tick 差值积分航向 */
 /* 只在 100ms 的刷屏里调会让 dt 变大, 航向会跳 */
+/* 循迹 step 也挂在这个 10ms 节拍上, 并且必须排在 mpu6050_update() 之后 */
 static void mpu_tick(void)
 {
     static uint32_t last = 0U;
@@ -62,6 +64,10 @@ static void mpu_tick(void)
     last = tick_get_ms();
 
     mpu6050_update();
+
+    /* ★ 必须排在 mpu6050_update() 【之后】: 循迹内环要用这一拍刚更新好的航向/角速度 */
+    /* ★ 全程不调 line_follow_start() -> s_running 恒为 0, step() 只读灰度算偏差, 不驱动电机 */
+    line_follow_step();
 }
 
 /* 显示: 每 100ms 读一次灰度 + 刷一次屏 */
@@ -80,8 +86,8 @@ static void show_sensors(void)
     /* 内部约 400us 延时, 跟着刷屏 100ms 一次就够 */
     Grayscale_Sensor_Read_All(gray_buf);
 
-    /* 第 1 行 16px: 标题 + 当前档位, 4 位 x 8px 占 x=96~127 */
-    OLED_ShowString(0, 0, (u8 *)"SENSOR", 16);
+    /* 第 1 行 16px: 标题 FOLLOW(6 字符 x 8px 占 x=0~47) + 当前档位 4 位(占 x=96~127) */
+    OLED_ShowString(0, 0, (u8 *)"FOLLOW", 16);
     OLED_ShowNum(96, 0, speed_table[speed_index], 4, 16);
 
     /* 第 2 行 12px: 8 路灰度位图, 读到 = 1, 没读到 = 0 */
@@ -101,34 +107,17 @@ static void show_sensors(void)
     OLED_ShowString(0, 16, (u8 *)"G", 12);
     OLED_ShowString(12, 16, bitmap, 12);        /* 8 位 x 6px 占 x=12~59 */
 
-    /* 第 3 行 12px: 两个编码器原始脉冲, 各 5 位 */
-    OLED_ShowString(0, 28, (u8 *)"E1", 12);
-    OLED_ShowNum(12, 28, encoder_1_A, 5, 12);
+    /* 第 3 行 12px: 循迹偏差 error(线最左 -100 ~ 最右 +100), 符号 + 3 位占 x=12~35 */
+    OLED_ShowString(0, 28, (u8 *)"E", 12);
+    show_signed3(12, 28, (int32_t)line_follow_get_error());
 
-    OLED_ShowString(60, 28, (u8 *)"E2", 12);
-    OLED_ShowNum(72, 28, encoder_2_A, 5, 12);
+    /* 第 4 行 12px: 外环给的目标航向 psi_ref(单位 0.1 度), 符号 + 3 位占 x=12~35 */
+    OLED_ShowString(0, 40, (u8 *)"P", 12);
+    show_signed3(12, 40, (int32_t)line_follow_get_psi_ref());
 
-    /* 第 4 行 12px: 两个轮子的实测速度 mm/s, 各 4 位 */
-    OLED_ShowString(0, 40, (u8 *)"S1", 12);
-    OLED_ShowNum(12, 40, (u32)((speed_1 < 0) ? -speed_1 : speed_1), 4, 12);
-
-    OLED_ShowString(60, 40, (u8 *)"S2", 12);
-    OLED_ShowNum(72, 40, (u32)((speed_2 < 0) ? -speed_2 : speed_2), 4, 12);
-
-    /* 第 5 行 12px: 角速度 + 航向角, 都是带符号 3 位 */
-    OLED_ShowString(0, 52, (u8 *)"R", 12);
-    OLED_ShowString(60, 52, (u8 *)"Y", 12);
-
-    if (s_mpu != 0U)
-    {
-        show_signed3(12, 52, (int32_t)(mpu6050_get_rate_x10() / 10));
-        show_signed3(72, 52, (int32_t)(mpu6050_get_yaw_x10() / 10));
-    }
-    else
-    {
-        /* 传感器没接: 右边只报 MPU:NO, 不显示数字 */
-        OLED_ShowString(72, 52, (u8 *)"MPU:NO", 12);
-    }
+    /* 第 5 行 12px: 陀螺仪实测航向(度 = yaw_x10 / 10), 符号 + 3 位占 x=12~35 */
+    OLED_ShowString(0, 52, (u8 *)"Y", 12);
+    show_signed3(12, 52, (int32_t)(mpu6050_get_yaw_x10() / 10));
 
     OLED_Refresh();
 }
@@ -136,6 +125,10 @@ static void show_sensors(void)
 int main(void)
 {
     SYSCFG_DL_init();
+
+    /* ★ 只初始化, 【不】调 line_follow_start(): 没启动时 step() 只读传感器、算偏差, 不动电机 */
+    line_follow_init();
+
     motor_init();
     motor_pid_init();       /* 速度闭环: 建两个轮子的 PID */
     key_init();             /* 配 key_encoder 定时器(周期模式 + ZERO 中断) */

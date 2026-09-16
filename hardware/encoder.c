@@ -6,17 +6,16 @@
 
 uint32_t encoder_1_A;
 uint32_t encoder_2_A;
-float speed_1 = 0;
-float speed_2 = 0;
+extern float speed_1;
+extern float speed_2;
 
 void encoder_init(void)
 {
-    // 使能 GPIOB 中断
-    NVIC_EnableIRQ(encoder_GPIOB_INT_IRQN);
-    // 清除定时器挂起位并启动，使能定时器中断
+    /* 只开 GPIO 中断(GROUP1)。GPIOA/GPIOB 共用 IRQ 1, 使能一次两边都通。
+     * ★ 定时器(key_encoder = TIMG7)由 key_init() 统一配置和启动, 这里不要再碰 ——
+     *   两个地方都配同一个定时器会打架。 */
     NVIC_ClearPendingIRQ(encoder_GPIOB_INT_IRQN);
-    DL_Timer_startCounter(key_encoder_INST);
-    NVIC_EnableIRQ(key_encoder_INST_INT_IRQN);
+    NVIC_EnableIRQ(encoder_GPIOB_INT_IRQN);
 }
 
 void encoder_get_speed(uint8_t id) 

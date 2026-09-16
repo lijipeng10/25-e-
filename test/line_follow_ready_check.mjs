@@ -14,14 +14,17 @@ const lfcSrc = readFileSync(join(root, 'system/line_follow.c'), 'utf8');
 const lfhSrc = readFileSync(join(root, 'system/line_follow.h'), 'utf8');
 const emptySrc = readFileSync(join(root, 'empty.c'), 'utf8');
 const motorSrc = readFileSync(join(root, 'hardware/motor.c'), 'utf8');
+const encSrc = readFileSync(join(root, 'hardware/encoder.h'), 'utf8');
 
 // 从 .c/.h 里抠出 #define NAME <数字> 的第一个整数(不用正则, 免得转义踩坑)
 const num = (src, name) => {
     const head = '#define ' + name + ' ';
     const line = src.split('\n').find((l) => l.indexOf(head) === 0);
     assert.ok(line, '没找到宏 ' + name);
-    const v = parseInt(line.slice(head.length).trim().split(' ')[0], 10);
-    assert.ok(Number.isFinite(v), name + ' 后面不是数字');
+    // 去掉括号和 U 后缀: 能吃下 (+1) / (-1) / 260U 这几种写法
+    const tok = line.slice(head.length).trim().split(' ')[0].replace(/[()]/g, '').replace(/U$/, '');
+    const v = parseInt(tok, 10);
+    assert.ok(Number.isFinite(v), name + ' 后面不是数字: ' + JSON.stringify(tok));
     return v;
 };
 
@@ -262,6 +265,17 @@ ok('目标为正时和以前算法完全一致(前进调参结果不受影响)',
         st2.out = Math.min(900, Math.max(0, st2.out));
         assert.equal(a.duty, Math.round(st2.out), 'now=' + now);
     }
+});
+
+// ---- 8. 编码器方向符号: 手转轮子实测出来的, 勿凭猜改 ----
+// 实测: 物理左轮(B路/E2A) 正转显示正; 物理右轮(A路/E1A) 正转显示负, 所以要翻。
+ok('编码器方向符号是实测确认过的(两个轮子符号不同是正常的)', () => {
+    assert.equal(num(encSrc, 'ENCODER_1_SIGN'), -1, '物理右轮(A路/E1A)的符号被改了');
+    assert.equal(num(encSrc, 'ENCODER_2_SIGN'), 1, '物理左轮(B路/E2A)的符号被改了');
+});
+
+ok('每圈脉冲数 = 260(用户实测; 双边沿才是 520, 现在 SysConfig 是单边沿)', () => {
+    assert.equal(num(encSrc, 'ENCODER_PULSE'), 260, 'ENCODER_PULSE 被改了');
 });
 
 console.log('\n' + pass + ' passed');

@@ -1,93 +1,49 @@
+#include "pid.h"
 #include "motor.h"
+#include "encoder.h"        /* 取实测速度 */
 
-/* ============================================================================
- *  motor.c —— TB6612 双直流电机驱动
- * ----------------------------------------------------------------------------
- *  引脚(SysConfig 生成宏, 注意是小写 motor_*):
- *      PWM : motor_pwm_INST = TIMG8  CC0=PB6(PWMA), CC1=PB7(PWMB)
- *      A路 : motor_AIN1=PB17, motor_AIN2=PB18
- *      B路 : motor_BIN1=PB19, motor_BIN2=PB23
- *      STBY= motor_STBY=PA16 (高=使能)
- *  说明: motor_pwm 是 TIMG8(TimerG), 所以用通用的 DL_Timer_* 接口,
- *        不要用 DL_TimerA_*(那是 TimerA 专用)。
- *  duty: 对外统一是百分比 0~100, 由 MOTOR_PWM_PERIOD 自动换算成定时器比较值,
- *        所以以后把 SysConfig 里 timerCount 改成 1000(20kHz) 也不用改这里。
- *        (line_follow.c 里的 LF_DUTY_MAX 是它自己的量程, 与本文件无关)
- * ==========================================================================*/
-#include "ti_msp_dl_config.h"
+#define motor_KP        0.5f
+#define motor_KI        0.0f
+#define motor_KD        0.0f
+#define motor_DUTY_MAX  20.0f   /* ★★ 我们的 motor_set_duty 是 0~100 百分比。
+                                   上限取 20 = 和以前的开环基础速度一致。
+                                   千万别写 4000(那是参考项目的量程) */
 
-/* motor_pwm(TIMG8) 的计数周期 = timerCount(见 SysConfig: PWM3.timerCount = 1000)。
-   PWM 频率 = 20MHz / (timerCount+1) ≈ 20kHz(避开 TB6612 上限, 也不在音频段)。
-   ⚠ 改 syscfg 的 timerCount 后, 这里必须同步改, 否则占空比会按比例失真。 */
-#define MOTOR_PWM_PERIOD    1000U
-
-/* 百分比(0~100) -> 定时器比较值
- *
- * ★★★ 这里的式子必须是"反"的, 写成 duty*PERIOD/100 是错的! ★★★
- *
- * MSPM0 的 TimerG 在 EDGE_ALIGN PWM 模式下是【从 LOAD 往下数】的,
- * CCP 输出在"计数 > 比较值"这段时间里为高, 所以
- *
- *      实际占空比 = (周期 - 比较值) / 周期
- *
- * 也就是说 —— 比较值越大, 占空比越小。TI 自己的 SysConfig 就是这么算的,
- * 见 source/ti/driverlib/.meta/pwm/PWMTimerCC.syscfg.js 第 107 行:
- *      proposedccValue = Math.round((100 - inst.dutyCycle) * period / 100) - 1;
- *
- * 也可以看官方例子 examples/.../timx_timer_mode_pwm_edge_sleep:
- *      timerCount = 2000, dutyCycle = 75  ->  ccValue = 500
- *      (如果用 (100-75)% * 2000 = 500, 反过来说 500 对应 75%; 正着写会得到 1500)
- *
- * 【之前写反了的后果——很严重, 不是"速度不对"这么简单】
- *      填 20 -> 实际输出 80%      填 90 -> 实际输出 10%   ("数值越大越慢")
- *      而且循迹的差速是【反的】:
- *          想让左轮快 -> left_cmd 变大 -> 比较值变大 -> 左轮实际更慢
- *      变成正反馈, 车会朝着偏离方向越走越远。
- *      50 是唯一的对称点, 所以"填 50 看起来是对的", 很容易被蒙过去。 */
-static uint16_t motor_duty_to_cmp(uint16_t duty)
-{
-    if (duty > 100U) duty = 100U;
-    return (uint16_t)(((uint32_t)(100U - duty) * MOTOR_PWM_PERIOD) / 100U);
-}
+static PidInc s_pid[2];
+static float  s_target[2];
 
 void motor_init(void)
 {
-    // 1) 方向脚先清零(停止)。顺序很重要: 一定要在使能驱动器之前,
-    //    否则 TB6612 会在方向脚还没定的瞬间吃到 PWM。
+    // 使能电机驱动器
+    DL_GPIO_setPins(motor_STBY_PORT, motor_STBY_PIN);
+    // 开启定时器
+    DL_Timer_startCounter(motor_pwm_INST);
+    // 设置AIN1和AIN2引脚下拉
     DL_GPIO_clearPins(motor_AIN1_PORT, motor_AIN1_PIN);
     DL_GPIO_clearPins(motor_AIN2_PORT, motor_AIN2_PIN);
     DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
     DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
-
-    // 2) 占空比清零。
-    //    ★ 注意: 这里必须用 motor_duty_to_cmp(0), 不能直接写 0!
-    //      直接写 0 的比较值 = 100% 占空比(见上面函数的说明),
-    //      上电瞬间就是全速, 很危险。
-    DL_Timer_setCaptureCompareValue(motor_pwm_INST, motor_duty_to_cmp(0U), GPIO_motor_pwm_C0_IDX);
-    DL_Timer_setCaptureCompareValue(motor_pwm_INST, motor_duty_to_cmp(0U), GPIO_motor_pwm_C1_IDX);
-
-    // 3) 开定时器
-    DL_Timer_startCounter(motor_pwm_INST);
-
-    // 4) 最后才使能电机驱动器
-    DL_GPIO_setPins(motor_STBY_PORT, motor_STBY_PIN);
+    // 设置PWM占空比
+    DL_TimerA_setCaptureCompareValue(motor_pwm_INST, 0, GPIO_motor_pwm_C0_IDX);
+    DL_TimerA_setCaptureCompareValue(motor_pwm_INST, 0, GPIO_motor_pwm_C1_IDX);
 }
 
 void motor_set_direction(uint8_t id, uint8_t direction)
 {
+    // 设置电机方向
     if(id == 1)
     {
-        if(direction == 1)       // 正转
+        if(direction == 1) // 正转
         {
             DL_GPIO_clearPins(motor_AIN1_PORT, motor_AIN1_PIN);
             DL_GPIO_setPins(motor_AIN2_PORT, motor_AIN2_PIN);
         }
-        else if(direction == 2)  // 反转
+        else if(direction == 2) // 反转
         {
             DL_GPIO_setPins(motor_AIN1_PORT, motor_AIN1_PIN);
             DL_GPIO_clearPins(motor_AIN2_PORT, motor_AIN2_PIN);
         }
-        else                     // 停止
+        else // 停止
         {
             DL_GPIO_clearPins(motor_AIN1_PORT, motor_AIN1_PIN);
             DL_GPIO_clearPins(motor_AIN2_PORT, motor_AIN2_PIN);
@@ -95,17 +51,17 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     }
     else if(id == 2)
     {
-        if(direction == 1)
+        if(direction == 1) // 正转
         {
             DL_GPIO_setPins(motor_BIN1_PORT, motor_BIN1_PIN);
             DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
         }
-        else if(direction == 2)
+        else if(direction == 2) // 反转
         {
             DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
             DL_GPIO_setPins(motor_BIN2_PORT, motor_BIN2_PIN);
         }
-        else
+        else // 停止
         {
             DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
             DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
@@ -113,24 +69,51 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     }
 }
 
-void motor_set_duty(uint8_t id, uint16_t duty)   /* duty: 百分比 0~100 */
+void motor_set_duty(uint8_t id, uint16_t duty)
 {
-    uint16_t cmp = motor_duty_to_cmp(duty);
-
+    // 设置电机占空比
     if(id == 1)
     {
-        DL_Timer_setCaptureCompareValue(motor_pwm_INST, cmp, GPIO_motor_pwm_C0_IDX);
+        DL_TimerA_setCaptureCompareValue(motor_pwm_INST, duty, GPIO_motor_pwm_C0_IDX);
     }
     else if(id == 2)
     {
-        DL_Timer_setCaptureCompareValue(motor_pwm_INST, cmp, GPIO_motor_pwm_C1_IDX);
+        DL_TimerA_setCaptureCompareValue(motor_pwm_INST, duty, GPIO_motor_pwm_C1_IDX);
     }
 }
 
-void motor_stop(uint8_t id)
+void motor_pid_init(void)
 {
-    motor_set_direction(1, 0);
-    motor_set_direction(2, 0);
-    motor_set_duty(1, 0);
-    motor_set_duty(2, 0);
+    uint8_t i;
+    for (i = 0; i < 2U; i++) {
+        pid_init(&s_pid[i], motor_KP, motor_KI, motor_KD, 0.0f, motor_DUTY_MAX);
+        s_target[i] = 0.0f;
+    }
+}
+
+void motor_pid_set(uint8_t id, float target_mm_s)
+{
+    if ((id < 1U) || (id > 2U)) { return; }
+    s_target[id - 1U] = target_mm_s;
+    if (target_mm_s == 0.0f) {
+        pid_reset(&s_pid[id - 1U]);
+        motor_set_duty(id, 0U);
+    }
+}
+
+/* 每 50ms 调一次, id = 1 或 2, 两个电机各自独立 */
+void motor_pid_update(uint8_t id)
+{
+    float   now, out;
+    uint8_t idx;
+
+    if ((id < 1U) || (id > 2U)) { return; }
+    idx = (uint8_t)(id - 1U);
+
+    if (s_target[idx] == 0.0f) { return; }      /* 目标为 0 就不动它(set 里已经给过 0) */
+
+    now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s(来自 encoder.c) */
+    out = pid_update(&s_pid[idx], s_target[idx] - now);
+
+    motor_set_duty(id, (uint16_t)out);
 }

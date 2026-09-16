@@ -8,8 +8,10 @@
  * 用 A/B GPIO 中断做软件四倍频计数(4096 计数/圈), Z 做零点, M法测速。
  */
 
-/* 初始化: 使能 GPIO 中断(GROUP1), 清状态 */
-void encoder_init(void);
+/* 初始化: 使能 GPIO 中断(GROUP1), 清状态
+ * ★ 名字是 sm_encoder_init 而不是 encoder_init ——
+ *   hardware/encoder.c(轮速编码器)里已经有一个 encoder_init() 了, 同名会链接失败。 */
+void sm_encoder_init(void);
 
 /* 四倍频计数(带符号), 相对 Z 零点 */
 int32_t encoder_get_count(uint8_t axis);

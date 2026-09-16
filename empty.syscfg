@@ -38,40 +38,11 @@ const UART2   = UART.addInstance();
 /**
  * Write custom configuration values to the imported modules.
  */
-/* 注意: ULPCLK 分频(UDIV)这里不设 —— 从 SYSOSC 取时钟时 UDIV 会被忽略,
- * 设了反而报 "UDIV will be disabled (/1)" 警告。不设就是 /1,
- * 于是 ULPCLK = MCLK = 32MHz, 外设时钟够用。 */
-
 const multiplier2         = system.clockTree["PLL_QDIV"];
 multiplier2.multiplyValue = 4;
 
 const mux4       = system.clockTree["EXHFMUX"];
 mux4.inputSelect = "EXHFMUX_XTAL";
-
-/* ★★ 时钟源改成芯片内部的 SYSOSC, 不再用外部晶振 + PLL ★★
- *
- * 为什么必须改(实测踩坑):
- *   原来 HSCLKMUX 选的是 SYSPLL0, 而 PLL 的参考是 HFXT(外部晶振)。
- *   开机时 ti_msp_dl_config.c 里为了"确认 PLL 锁对了"会做两次频率测量和一次
- *   等 PLL 锁定, 这三处【都没有超时】。晶振起振是概率性的(虚焊/负载电容/温度/
- *   板子受力都会影响), 一次没起振就永远卡在那里 ——
- *   表现为: 上电 OLED 全黑 / 串口不出 [1] / 复位也没用(复位后又卡在同一行),
- *   而且【时好时坏】。
- *
- * 改成 SYSOSC 之后: 不需要外部晶振、不需要 PLL,
- * 那三处死等【整段消失】, 这个故障模式从根上没有了。
- *
- * 代价: 主频从 80MHz 降到 32MHz。对本项目完全够用
- *      (电机 PWM 20kHz、OLED SPI 8MHz 都绰绰有余),
- *      而且 delay.c / tick.c 用的是 SysConfig 生成的 CPUCLK_FREQ 宏, 会自动跟着变。
- *
- * 后备方案: 正式板子到了、确认晶振稳定之后, 也可以改回 SYSPLL0。 */
-const mux8       = system.clockTree["HSCLKMUX"];
-mux8.inputSelect = "HSCLKMUX_SYSOSC";
-
-/* HFXT(外部高频晶振) 直接关掉 —— 不再需要它 */
-const pinFunction4              = system.clockTree["HFXT"];
-pinFunction4.enable             = false;
 
 GPIO1.$name                         = "sm_motor";
 GPIO1.associatedPins.create(4);
@@ -90,32 +61,26 @@ GPIO2.$name                         = "sm_motor_encoder";
 GPIO2.associatedPins.create(6);
 GPIO2.associatedPins[0].direction   = "INPUT";
 GPIO2.associatedPins[0].$name       = "A1";
-GPIO2.associatedPins[0].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[0].polarity    = "RISE_FALL";
 GPIO2.associatedPins[0].pin.$assign = "PA15";
 GPIO2.associatedPins[1].$name       = "B1";
 GPIO2.associatedPins[1].direction   = "INPUT";
-GPIO2.associatedPins[1].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[1].polarity    = "RISE_FALL";
 GPIO2.associatedPins[1].pin.$assign = "PA17";
 GPIO2.associatedPins[2].$name       = "Z1";
 GPIO2.associatedPins[2].direction   = "INPUT";
-GPIO2.associatedPins[2].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[2].polarity    = "RISE";
 GPIO2.associatedPins[2].pin.$assign = "PA30";
 GPIO2.associatedPins[3].$name       = "A2";
 GPIO2.associatedPins[3].direction   = "INPUT";
-GPIO2.associatedPins[3].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[3].polarity    = "RISE_FALL";
 GPIO2.associatedPins[3].pin.$assign = "PB22";
 GPIO2.associatedPins[4].$name       = "B2";
 GPIO2.associatedPins[4].direction   = "INPUT";
-GPIO2.associatedPins[4].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[4].polarity    = "RISE_FALL";
 GPIO2.associatedPins[4].pin.$assign = "PB1";
 GPIO2.associatedPins[5].$name       = "Z2";
 GPIO2.associatedPins[5].direction   = "INPUT";
-GPIO2.associatedPins[5].interruptEn = false;   /* ★ 云台没接, 悬空引脚开中断会风暴 */
 GPIO2.associatedPins[5].polarity    = "RISE";
 GPIO2.associatedPins[5].pin.$assign = "PA7";
 
@@ -158,25 +123,25 @@ GPIO7.$name                              = "encoder";
 GPIO7.associatedPins.create(4);
 GPIO7.associatedPins[0].$name            = "E1A";
 GPIO7.associatedPins[0].direction        = "INPUT";
-GPIO7.associatedPins[0].internalResistor = "PULL_UP";
 GPIO7.associatedPins[0].interruptEn      = true;
-GPIO7.associatedPins[0].polarity         = "RISE_FALL";
+GPIO7.associatedPins[0].polarity         = "RISE";
+GPIO7.associatedPins[0].internalResistor = "PULL_DOWN";
 GPIO7.associatedPins[0].pin.$assign      = "PB20";
 GPIO7.associatedPins[1].$name            = "E1B";
 GPIO7.associatedPins[1].direction        = "INPUT";
-GPIO7.associatedPins[1].internalResistor = "PULL_UP";
-GPIO7.associatedPins[1].polarity         = "FALL";
+GPIO7.associatedPins[1].internalResistor = "PULL_DOWN";
+GPIO7.associatedPins[1].polarity         = "RISE";
 GPIO7.associatedPins[1].pin.$assign      = "PA14";
 GPIO7.associatedPins[2].$name            = "E2A";
 GPIO7.associatedPins[2].direction        = "INPUT";
-GPIO7.associatedPins[2].internalResistor = "PULL_UP";
 GPIO7.associatedPins[2].interruptEn      = true;
-GPIO7.associatedPins[2].polarity         = "RISE_FALL";
+GPIO7.associatedPins[2].internalResistor = "PULL_DOWN";
+GPIO7.associatedPins[2].polarity         = "RISE";
 GPIO7.associatedPins[2].pin.$assign      = "PA25";
 GPIO7.associatedPins[3].$name            = "E2B";
 GPIO7.associatedPins[3].direction        = "INPUT";
-GPIO7.associatedPins[3].internalResistor = "PULL_UP";
-GPIO7.associatedPins[3].polarity         = "FALL";
+GPIO7.associatedPins[3].internalResistor = "PULL_DOWN";
+GPIO7.associatedPins[3].polarity         = "RISE";
 GPIO7.associatedPins[3].pin.$assign      = "PB25";
 
 GPIO8.$name                         = "GrayS";
@@ -206,14 +171,6 @@ GPIO9.associatedPins[3].initialValue = "SET";
 GPIO9.associatedPins[3].pin.$assign  = "PB26";
 
 I2C1.$name                             = "MPU6050";
-/* ★★ 这一行是必须的, 少了它 I2C 根本不能用! ★★
- * 没有它, SysConfig 认为"这个 I2C 实例不做控制器", 于是:
- *     - 不生成 DL_I2C_Config
- *     - SYSCFG_DL_MPU6050_init() 里【不会有 DL_I2C_init() / DL_I2C_enable()】
- * 结果就是外设压根没跑起来, 任何地址都不会应答 ——
- * 表现为"传感器接得好好的, 却一直探测不到"(实际踩过)。
- * 依据: TI 官方例子 comm_modules/i2c_controller/i2c_controller.syscfg 里有
- *       I2C1.basicEnableController = true; 而我们这份漏了。 */
 I2C1.basicEnableController             = true;
 I2C1.peripheral.$assign                = "I2C0";
 I2C1.peripheral.sdaPin.$assign         = "PA0";
@@ -297,10 +254,12 @@ SPI1.cs0PinConfig.$name                 = "ti_driverlib_gpio_GPIOPinGeneric13";
 SYSCTL.forceDefaultClkConfig = true;
 SYSCTL.clockTreeEn           = true;
 
-TIMER1.timerPeriod      = "50 ms";
-TIMER1.timerClkDiv      = 2;
-TIMER1.timerClkPrescale = 50;
-TIMER1.$name            = "main_timer";
+TIMER1.timerPeriod        = "50 ms";
+TIMER1.timerClkDiv        = 2;
+TIMER1.timerClkPrescale   = 50;
+TIMER1.$name              = "key_encoder";
+TIMER1.timerMode          = "PERIODIC_UP";
+TIMER1.peripheral.$assign = "TIMG7";
 
 UART1.$name                            = "smotor_vision";
 UART1.targetBaudRate                   = 115200;
@@ -337,11 +296,8 @@ UART2.rxPinConfig.$name                = "ti_driverlib_gpio_GPIOPinGeneric7";
  * version of the tool will not impact the pinmux you originally saw.  These lines can be completely deleted in order to
  * re-solve from scratch.
  */
-/* (HFXT 已关掉, 这两行建议分配必须删掉 —— 留着会报
- *  "Cannot read properties of undefined (reading hfxInPin)") */
-Board.peripheral.$suggestSolution                  = "DEBUGSS";
-Board.peripheral.swclkPin.$suggestSolution         = "PA20";
-Board.peripheral.swdioPin.$suggestSolution         = "PA19";
-SPI1.peripheral.misoPin.$suggestSolution           = "PB21";
-SPI1.peripheral.cs0Pin.$suggestSolution            = "PA2";
-TIMER1.peripheral.$suggestSolution                 = "TIMA0";
+Board.peripheral.$suggestSolution          = "DEBUGSS";
+Board.peripheral.swclkPin.$suggestSolution = "PA20";
+Board.peripheral.swdioPin.$suggestSolution = "PA19";
+SPI1.peripheral.misoPin.$suggestSolution   = "PB21";
+SPI1.peripheral.cs0Pin.$suggestSolution    = "PA2";

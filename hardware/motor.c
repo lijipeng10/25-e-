@@ -1,17 +1,17 @@
 #include "pid.h"
 #include "motor.h"
-#include "encoder.h"        /* 取实测速度 */
+#include "encoder.h"
 
+/* 速度环增益。增量式: out += KP*(e-e_last) + KI*e
+   KI 绝对不能是 0 —— 纯 P 的话稳态永远差一截, 速度永远追不上目标(实测踩过) */
 #define motor_KP        0.5f
-#define motor_KI        0.0f
+#define motor_KI        0.5f
 #define motor_KD        0.0f
-/* motor_set_duty 传的是【定时器比较值】, 定时器 period = 1000
- * (见 Debug/ti_msp_dl_config.c 的 gmotor_pwmConfig)
- * 所以 1000 = 100% 占空比, 200 = 20% */
-#define motor_DUTY_MAX  1000.0f
 
-static PidInc s_pid[2];
-static float  s_target[2];
+#define motor_DUTY_MAX  900.0f
+
+static PidInc s_pid[2];         /* 两个轮子各自的 PID 状态 */
+static float  s_target[2];      /* 两个轮子各自的目标速度 (mm/s) */
 
 void motor_init(void)
 {

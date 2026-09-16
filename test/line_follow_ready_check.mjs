@@ -223,4 +223,45 @@ ok('一开始就看不到线 -> 也是 ' + LOST_MS + 'ms 后停, 不会 0ms 就�
     assert.equal(debounce(Array(30).fill(blank)).stopAt, LOST_MS / STEP_MS - 1);
 });
 
+// ---- 7. 速度环的「方向 + 幅值」拆分, 与 motor.c 的 motor_pid_update() 等价 ----
+// 编码器现在能测出正反转(在 A 相跳变时读 B 相电平), 所以目标速度可以带符号。
+// 方向由【目标的符号】决定, PID 只调【幅值】: 反馈取绝对值, 正负不会打架。
+function pidStep(target, now, st) {
+    const targetMag = target >= 0 ? target : -target;
+    const nowMag = now >= 0 ? now : -now;
+    const e = targetMag - nowMag;
+    st.out += 0.5 * (e - st.eLast) + 0.5 * e;
+    st.eLast = e;
+    st.out = Math.min(900, Math.max(0, st.out));
+    return { dir: target >= 0 ? 1 : 2, duty: Math.round(st.out) };
+}
+
+ok('目标为正 -> 方向脚 = 1(前进); 目标为负 -> 方向脚 = 2(后退)', () => {
+    assert.equal(pidStep(300, 300, { out: 400, eLast: 0 }).dir, 1);
+    assert.equal(pidStep(-300, -300, { out: 400, eLast: 0 }).dir, 2);
+});
+
+ok('倒转时反馈取绝对值: 转得不够快, 占空比应该继续加大', () => {
+    const r = pidStep(-300, -100, { out: 300, eLast: 0 });
+    assert.ok(r.duty > 300, '倒转时占空比没加大: ' + r.duty);
+});
+
+ok('要倒退但轮子还在正转: 幅值一样 -> 占空比不动, 靠方向脚把它拽回来', () => {
+    const r = pidStep(-300, 300, { out: 300, eLast: 0 });
+    assert.equal(r.dir, 2, '方向脚没翻成后退');
+    assert.equal(r.duty, 300, '幅值相同时占空比不该变: ' + r.duty);
+});
+
+ok('目标为正时和以前算法完全一致(前进调参结果不受影响)', () => {
+    const st1 = { out: 400, eLast: 0 }, st2 = { out: 400, eLast: 0 };
+    for (const now of [0, 100, 300, 500]) {
+        const a = pidStep(300, now, st1);                 // 新的(方向+幅值)
+        const e = 300 - now;                              // 旧的(直接相减)
+        st2.out += 0.5 * (e - st2.eLast) + 0.5 * e;
+        st2.eLast = e;
+        st2.out = Math.min(900, Math.max(0, st2.out));
+        assert.equal(a.duty, Math.round(st2.out), 'now=' + now);
+    }
+});
+
 console.log('\n' + pass + ' passed');

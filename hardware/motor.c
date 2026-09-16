@@ -139,7 +139,7 @@ static void motor_stop_all(void)
 /* 每 50ms 调一次, id = 1 或 2, 两个电机各自独立 */
 void motor_pid_update(uint8_t id)
 {
-    float   now, out;
+    float   now, out, target_mag, now_mag;
     uint8_t idx;
 
     if ((id < 1U) || (id > 2U))
@@ -159,11 +159,28 @@ void motor_pid_update(uint8_t id)
         return;                                 /* 目标为 0 就不动它(set 里已经给过 0) */
     }
 
-    now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s, 来自 encoder.c */
-    out = pid_update(&s_pid[idx], s_target[idx] - now);
+    now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s【带符号】, 来自 encoder.c */
+
+    /* ★ 方向由【目标速度的符号】决定, PID 只管快慢(幅值)。
+     *   目标写 -300 就是"以 300mm/s 倒转"; 反馈取绝对值来比, 正负不会打架。
+     *   ★ 目标 >= 0 时这一段的算法和以前【完全一样】, 前进的调参结果不受影响 */
+    if (s_target[idx] >= 0.0f)
+    {
+        target_mag = s_target[idx];
+        motor_set_direction(id, 1U);            /* 前进 */
+    }
+    else
+    {
+        target_mag = -s_target[idx];
+        motor_set_direction(id, 2U);            /* 后退 */
+    }
+
+    now_mag = (now >= 0.0f) ? now : -now;
+
+    out = pid_update(&s_pid[idx], target_mag - now_mag);
 
     /* ★ 编码器故障判据: 占空比已经顶到上限, 轮子却一个脉冲都没有 */
-    if ((out >= (motor_DUTY_MAX - 1.0f)) && (now < 1.0f))
+    if ((out >= (motor_DUTY_MAX - 1.0f)) && (now_mag < 1.0f))
     {
         s_fault_cnt[idx]++;
 

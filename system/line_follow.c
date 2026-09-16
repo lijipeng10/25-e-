@@ -115,8 +115,10 @@ static int16_t lf_calc_error(uint8_t bits, uint8_t *on_line)
 /* 把一个轮子的【命令速度】写下去: 方向脚 + 速度环目标 */
 static void lf_set_wheel(uint8_t id, int32_t speed)
 {
-    /* ★ 编码器只数脉冲、认不出方向, 速度环拿到负目标只会把占空比压到 0。
-     *   所以命令直接夹在 [0, LF_CMD_MAX]: 慢轮最多降到 0, 不倒转。 */
+    /* ★ 现在的循迹只往前走, 所以命令夹在 [0, LF_CMD_MAX]: 慢轮最多降到 0。
+     *   ★ 编码器【现在能测出方向了】(见 encoder.h 的 ENCODER_x_SIGN), 以后要倒转,
+     *     把负数直接传给 motor_pid_set() 就行 —— 速度环会按符号自己设方向脚。
+     *     (不能再靠 motor_set_direction() 手设: 速度环每 50ms 会用符号覆盖它) */
     if (speed < 0)
     {
         speed = 0;

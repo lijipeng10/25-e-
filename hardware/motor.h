@@ -18,6 +18,8 @@ void motor_init(void);
 void motor_set_direction(uint8_t id, uint8_t direction);
 void motor_set_duty(uint8_t id, uint16_t duty);
 void motor_pid_init(void);
+/* 设定目标速度 mm/s【带符号】: 正 = 前进, 负 = 后退(方向脚由速度环自己设)。
+ * ★ 倒退能用的前提是编码器测得出方向 —— 见 encoder.h 的 ENCODER_x_SIGN */
 void motor_pid_set(uint8_t id, float target_mm_s);
 void motor_pid_update(uint8_t id);
 

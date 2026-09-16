@@ -150,14 +150,25 @@ static void show_status(void)
  * ★★ 两个端口都要读: E1A = PB20(GPIOB), E2A = PA25(GPIOA), 不是同一个端口。
  *    只读一个端口的后果: (1) 另一路脉冲数永远不涨, 那一路的速度环拿不到反馈;
  *    (2) 它的中断标志没人清, 电平还在 -> 中断反复重进 -> 程序卡死。
- * ★ 现在是【双边沿】计数(A 的上升沿 + 下降沿都进中断), 每圈脉冲数是单边沿的两倍,
- *   对应 encoder.h 的 ENCODER_PULSE = 520。极性改回 RISE 就要把那个数改回 260。 */
+ * ★★ 方向: A 相跳变时【读一下 B 相的电平】—— B 高算一个方向, B 低算另一个(正交解码)。
+ *    这样 encoder_1_A / encoder_2_A 就是【带符号】的: 正 = 前进, 负 = 后退。
+ *    ★ B 相【不用开中断】, 只要配成输入就行(已经配好了); 中断只挂在 A 相上。
+ *    ★ 实测"手往前转却显示负"就把 encoder.h 里对应的 ENCODER_x_SIGN 改成 -1。
+ * ★ 数的是 A 相的【单边沿】(SysConfig 里极性 = FALL), 一圈 260 个脉冲。 */
 void GROUP1_IRQHandler(void)
 {
     switch (DL_GPIO_getPendingInterrupt(GPIOA))
     {
         case encoder_E2A_IIDX:
-            encoder_2_A++;              /* 右轮(B路) */
+            /* 右轮(B路): A 跳变时看 B */
+            if (DL_GPIO_readPins(encoder_E2B_PORT, encoder_E2B_PIN) != 0)
+            {
+                encoder_2_A += ENCODER_2_SIGN;
+            }
+            else
+            {
+                encoder_2_A -= ENCODER_2_SIGN;
+            }
             break;
 
         default:
@@ -167,7 +178,15 @@ void GROUP1_IRQHandler(void)
     switch (DL_GPIO_getPendingInterrupt(GPIOB))
     {
         case encoder_E1A_IIDX:
-            encoder_1_A++;              /* 左轮(A路) */
+            /* 左轮(A路): A 跳变时看 B */
+            if (DL_GPIO_readPins(encoder_E1B_PORT, encoder_E1B_PIN) != 0)
+            {
+                encoder_1_A += ENCODER_1_SIGN;
+            }
+            else
+            {
+                encoder_1_A -= ENCODER_1_SIGN;
+            }
             break;
 
         default:

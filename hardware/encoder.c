@@ -4,11 +4,12 @@
 #include "pid.h"
 #include "tick.h"
 
-uint32_t encoder_1_A;
-uint32_t encoder_2_A;
+/* ★ 带符号: 正 = 前进, 负 = 后退。方向由 GROUP1 中断里读 B 相电平决定 */
+int32_t encoder_1_A;
+int32_t encoder_2_A;
 
-/* 实测速度 mm/s。定义放在本模块里(原来定义在 empty.c, 声明却在这里,
-   主程序不该持有电机测速的状态) —— encoder.h 里只有 extern 声明。 */
+/* 实测速度 mm/s【带符号】: 正 = 前进, 负 = 后退。
+   定义放在本模块里(原来定义在 empty.c, 声明却在这里, 主程序不该持有电机测速的状态)。 */
 float speed_1 = 0;
 float speed_2 = 0;
 

@@ -13,7 +13,7 @@ const draws = [
     ['E', 0, 1, 0], ['E值', 6, 4, 0], ['S', 40, 1, 0], ['S值', 46, 4, 0],
     ['l', 0, 1, 12], ['l值', 6, 5, 12], ['r', 40, 1, 12], ['r值', 46, 5, 12],
     ['L', 0, 1, 24], ['L值', 6, 5, 24], ['R', 40, 1, 24], ['R值', 46, 5, 24],
-    ['G', 0, 1, 36], ['G位图', 12, 8, 36],
+    ['G', 0, 1, 36], ['G位图', 12, 8, 36], ['|E|', 64, 3, 36], ['|E|值', 84, 3, 36],
     ['状态', 0, 11, 48],
 ];
 
@@ -38,9 +38,18 @@ ok('同一行的左右两栏不重叠', () => {
     }
 });
 
-ok('状态字符串等长, 短字符串不会在屏上留残字', () => {
-    const strs = ['ERR-ENCODER', 'LOST       ', 'RUN        ', 'MPU:NO     ', 'STOP  K2=GO'];
-    for (const s of strs) assert.equal(s.length, 11, JSON.stringify(s));
+ok('状态行每条都铺满 11 个字符, 短字符串不会在屏上留残字', () => {
+    // [固定文字, 后面还要接着写的数字位数]
+    const rows = [
+        ['ERR-ENCODER', 0],
+        ['MPU:NO K2GO', 0],
+        ['STOP  K2=GO', 0],
+        ['LOST ', 6],        // 后面 6 位毫秒数
+        ['RUN  ', 6],
+    ];
+    for (const [text, digits] of rows) {
+        assert.equal(text.length + digits, 11, JSON.stringify(text));
+    }
 });
 
 // ---- 2. 控制律: steer = KP*error*SIGN, 左轮 = BASE + steer, 右轮 = BASE - steer ----
@@ -162,6 +171,25 @@ ok('empty.c 的 L/R 实测速度按通道号取, 没有硬写 speed_1/speed_2', 
         'L 那一行没走 speed_of(LF_LEFT_ID)');
     assert.match(emptySrc, /show_signed\(46, 24, speed_of\(LF_RIGHT_ID\)/,
         'R 那一行没走 speed_of(LF_RIGHT_ID)');
+});
+
+// ---- 6. 诊断量: 运行时长按 10ms 累加, |error| 最大值只增不减 ----
+const STEP_MS = 10, E_MAX_LIMIT = 100;
+
+ok('运行时长按 10ms 累加, 且不会回绕(丢线后停在最后的值)', () => {
+    let ms = 0;
+    for (let i = 0; i < 300; i++) { if (ms < 0xFFFF) ms += STEP_MS; }   // 3 秒
+    assert.equal(ms, 3000);
+    const before = ms;
+    // 丢线后 step() 直接 return, 不再累加 —— 屏上保留的就是这次跑了多久
+    assert.equal(ms, before);
+});
+
+ok('|error| 最大值只增不减, 且不超过 100', () => {
+    const seq = [0, 14, -28, 71, -100, 43, 0];
+    let mx = 0;
+    for (const e of seq) { const a = Math.abs(e); if (a > mx) mx = a; }
+    assert.equal(mx, E_MAX_LIMIT);
 });
 
 console.log('\n' + pass + ' passed');

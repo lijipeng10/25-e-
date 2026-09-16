@@ -27,6 +27,7 @@
 #define LF_STEER_KP     3       /* 每 1 格误差给多少差速 mm/s; error 最大 ±100 */
 #define LF_STEER_MAX    300     /* 差速上限 mm/s; 等于 BASE 时慢轮正好能降到 0 */
 #define LF_STEER_SIGN   (+1)    /* ★★ 唯一的方向开关: 实测"越偏越远"就改成 -1 ★★ */
+#define LF_STEP_MS      10U     /* line_follow_step() 的调用周期(ms) */
 
 /* 单轮命令上限: 基础 + 满差速, 快轮最多这么快 */
 #define LF_CMD_MAX      (LF_BASE_SPEED + LF_STEER_MAX)
@@ -51,6 +52,8 @@ static int16_t  s_cmd_left;     /* 左轮命令速度 mm/s */
 static int16_t  s_cmd_right;    /* 右轮命令速度 mm/s */
 static int16_t  s_e_min;        /* 本次运行期间 error 的最小/最大值 */
 static int16_t  s_e_max;
+static uint16_t s_run_ms;       /* 本次运行已经跑了多少毫秒(丢线后停在最后那个值) */
+static uint16_t s_e_max_abs;    /* 本次运行期间 |error| 到过的最大值 */
 
 /* ---------- 内部函数 ---------- */
 
@@ -138,14 +141,18 @@ void line_follow_init(void)
     s_cmd_right = 0;
     s_e_min     = 0;
     s_e_max     = 0;
+    s_run_ms    = 0U;
+    s_e_max_abs = 0U;
 }
 
 void line_follow_start(void)
 {
     s_running = 1U;
     s_lost    = 0U;
-    s_e_min   = 0;              /* 误差记录器清零, 只记这一次运行 */
-    s_e_max   = 0;
+    s_e_min     = 0;            /* 这几项清零, 只记这一次运行 */
+    s_e_max     = 0;
+    s_run_ms    = 0U;
+    s_e_max_abs = 0U;
 }
 
 void line_follow_stop(void)
@@ -167,7 +174,8 @@ uint8_t line_follow_is_lost(void)
 
 void line_follow_step(void)
 {
-    int32_t steer;
+    int32_t steer = 0;
+    int16_t e_abs = 0;
 
     /* ★ 第 1 步: 读灰度、算偏差 —— 不管跑不跑都要做。
      *   屏幕上的 E 和 G 全靠它; 停着不读就没法在不启动电机的情况下核对传感器。 */
@@ -216,6 +224,20 @@ void line_follow_step(void)
         s_e_max = s_error;
     }
 
+    /* ★ 诊断用: 已经跑了多久 + |error| 最大到过多少。
+     *   "瞬间丢线" 和 "跑了一段才丢" 是两种完全不同的毛病, 靠这两个数分开 */
+    if (s_run_ms < 0xFFFFU)
+    {
+        s_run_ms += LF_STEP_MS;
+    }
+
+    e_abs = (s_error < 0) ? -s_error : s_error;
+
+    if (e_abs > (int16_t)s_e_max_abs)
+    {
+        s_e_max_abs = (uint16_t)e_abs;
+    }
+
     lf_set_wheel(LF_LEFT_ID,  s_cmd_left);
     lf_set_wheel(LF_RIGHT_ID, s_cmd_right);
 }
@@ -245,6 +267,18 @@ int16_t line_follow_get_cmd_left(void)
 int16_t line_follow_get_cmd_right(void)
 {
     return s_cmd_right;
+}
+
+/* 本次运行已经跑了多少毫秒; 丢线停车后停在最后那个值 */
+uint16_t line_follow_get_run_ms(void)
+{
+    return s_run_ms;
+}
+
+/* 本次运行期间 |error| 到过的最大值(0~100) */
+int16_t line_follow_get_error_max_abs(void)
+{
+    return (int16_t)s_e_max_abs;
 }
 
 void line_follow_get_error_range(int16_t *mn, int16_t *mx)

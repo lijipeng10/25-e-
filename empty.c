@@ -25,17 +25,15 @@ static uint8_t s_mpu = 0U;
 
 /* ============================================================================
  *  崩溃取证 —— 用来把"跑着跑着就退出程序了"分成三种情况, 不靠猜:
- *    A. 屏幕上【又出现 BOOT 倒计时】      -> MCU 复位了(不是卡死)
- *    B. 屏幕【定格】, 右下角心跳数字不动, 也没有 FAULT -> CPU 卡在某个死等里
- *    C. 屏幕显示【!! FAULT !!】            -> CPU 跑飞了(HardFault / NMI)
- *    D. 心跳数字还在跳、车不动             -> 程序活着, 是逻辑问题(比如 LOST)
+ *    A. 屏幕上又出现 BOOT 屏              -> MCU 复位了(不是卡死)
+ *    B. 屏幕定格, 也没有 FAULT            -> CPU 卡在某个死等里
+ *    C. 屏幕显示 !! FAULT !!              -> CPU 跑飞了(HardFault / NMI)
+ *    D. 状态行在 RUN/LOST 之间正常变化     -> 程序活着, 是循迹本身的逻辑/参数问题
+ *   (D 已经确认: 状态行显示 LOST, 且 L/R 有读数 -> 程序活着, 是"看不到线"导致的停车)
  * ==========================================================================*/
 
 /* 1 = OLED 已经初始化好, 故障处理函数才能安全地往上写 */
 static volatile uint8_t s_oled_ready = 0U;
-
-/* 主循环心跳: 屏幕每刷一次 +1, 显示在状态行右边 4 位。数字还在跳 = CPU 活着 */
-static volatile uint16_t s_loop_cnt = 0U;
 
 /* 按【电机通道号】取实测速度: 1 = A路 -> speed_1, 2 = B路 -> speed_2。
  * ★ 通道号和"左/右轮"的对应关系在 line_follow.h 的 LF_LEFT_ID / LF_RIGHT_ID,
@@ -79,8 +77,6 @@ static void show_status(void)
     }
     last = now;
 
-    s_loop_cnt++;
-
     /* 第 1 行: E = 偏差(-100 线在最左 ~ +100 线在最右), S = 差速量(mm/s) */
     OLED_ShowString(0, 0, (u8 *)"E", 12);
     show_signed(6, 0, (int32_t)line_follow_get_error(), 3);
@@ -119,30 +115,28 @@ static void show_status(void)
     OLED_ShowString(0, 36, (u8 *)"G", 12);
     OLED_ShowString(12, 36, bitmap, 12);        /* 8 位 x 6px 占 x=12~59 */
 
-    /* 第 5 行: 状态。★ 几条字符串都补齐成 11 个字符, 不然短的那条盖不掉长的, 屏上留残字 */
+    /* 第 4 行右边: 本次运行 |error| 的最大值(0~100)。
+     * ★ 顶到 100 就是线已经甩到传感器最边上 —— 说明车真的跑偏出线了 */
+    OLED_ShowString(64, 36, (u8 *)"|E|", 12);
+    OLED_ShowNum(84, 36, (u32)line_follow_get_error_max_abs(), 3, 12);
+
+    /* 第 5 行: 状态 + 已经跑了多少毫秒。
+     * ★★ 每条都正好铺满 11 个字符(66 像素), 不然短的那条盖不掉长的, 屏上留残字。
+     * ★ 毫秒数是关键诊断: 几百毫秒就 LOST = 一起步就跑偏; 跑了几秒才 LOST = 能跟一段 */
     if (motor_is_fault() != 0U)
     {
-        OLED_ShowString(0, 48, (u8 *)"ERR-ENCODER", 12);
+        OLED_ShowString(0, 48, (u8 *)"ERR-ENCODER", 12);        /* 11 字符 */
     }
-    else if (line_follow_is_lost() != 0U)
+    else if ((line_follow_is_running() == 0U) && (line_follow_is_lost() == 0U))
     {
-        OLED_ShowString(0, 48, (u8 *)"LOST       ", 12);
-    }
-    else if (line_follow_is_running() != 0U)
-    {
-        OLED_ShowString(0, 48, (u8 *)"RUN        ", 12);
-    }
-    else if (s_mpu == 0U)
-    {
-        OLED_ShowString(0, 48, (u8 *)"MPU:NO     ", 12);
+        OLED_ShowString(0, 48, (u8 *)((s_mpu == 0U) ? "MPU:NO K2GO" : "STOP  K2=GO"), 12);
     }
     else
     {
-        OLED_ShowString(0, 48, (u8 *)"STOP  K2=GO", 12);
+        /* 5 字符标题 + 6 位毫秒 = 11 字符, 正好铺满 */
+        OLED_ShowString(0, 48, (u8 *)((line_follow_is_lost() != 0U) ? "LOST " : "RUN  "), 12);
+        OLED_ShowNum(30, 48, (u32)line_follow_get_run_ms(), 6, 12);
     }
-
-    /* 状态行右边的空位: 心跳计数。★ 它定住不动 = 主循环已经不转了 */
-    OLED_ShowNum(72, 48, (u32)(s_loop_cnt % 10000U), 4, 12);
 
     OLED_Refresh();
 }

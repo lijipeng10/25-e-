@@ -49,6 +49,13 @@ int16_t line_follow_get_steer(void);
 int16_t line_follow_get_cmd_left(void);
 int16_t line_follow_get_cmd_right(void);
 
+/* ★ 诊断: 本次运行已经跑了多少毫秒(丢线停车后停在最后那个值)。
+ *   几百毫秒就丢 = 一起步就跑偏了; 跑了好几秒才丢 = 能跟一段, 是转弯/控制不够 */
+uint16_t line_follow_get_run_ms(void);
+
+/* ★ 诊断: 本次运行期间 |error| 到过的最大值(0~100)。顶到 100 = 线已经甩到传感器边上了 */
+int16_t line_follow_get_error_max_abs(void);
+
 /* 本次运行期间 error 到过的最小 / 最大值(按 KEY2 启动时清零) */
 void line_follow_get_error_range(int16_t *mn, int16_t *mx);
 

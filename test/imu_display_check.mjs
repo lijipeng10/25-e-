@@ -53,4 +53,40 @@ ok('int16 原始值一定放得进 5 位', () => {
     assert.ok(String(32767).length <= 5);
 });
 
+// ---- 4. 显示用的 8 点指数平均: 与 mpu6050.c 的 s_raw[i] += (raw-avg)/8 等价 ----
+// C 的整数除法向零截断, 所以这里用 Math.trunc; 必须逐位等价, 否则测的不是同一个算法
+const ema = (samples) => {
+    let avg = 0;
+    const out = [];
+    for (const x of samples) { avg += Math.trunc((x - avg) / 8); out.push(avg); }
+    return out;
+};
+
+const pp = (a) => Math.max(...a) - Math.min(...a);
+
+ok('常数输入能收敛到真值(不会卡在半路)', () => {
+    const out = ema(Array(100).fill(16000));
+    assert.ok(Math.abs(out[99] - 16000) <= 100, 'settled at ' + out[99]);
+});
+
+ok('收敛后彻底不动(整数除法不留极限环)', () => {
+    // 整数除法向零截断, 差值 < 8 时加数为 0 -> 停在真值下方最多 7 LSB, 然后完全静止。
+    // 这 7 LSB 的静态偏差对"看传感器通不通"没影响, 但不能指望它精确等于真值。
+    const out = ema(Array(300).fill(16000));
+    assert.equal(out[299], out[249]);                       // 后 50 次一个数都不变
+    assert.ok(Math.abs(out[299] - 16000) <= 7, 'error ' + (16000 - out[299]));
+});
+
+ok('噪声被压到 1/5 以下(AZ 静止时的乱跳)', () => {
+    // 真值 16000, 单次采样 ±300 抖动(交替最坏情况)
+    const noisy = Array.from({ length: 400 }, (_, i) => 16000 + (i % 2 ? 300 : -300));
+    const rawPP = pp(noisy), avgPP = pp(ema(noisy).slice(100));   // 跳过前 100 次爬升
+    assert.ok(avgPP * 5 < rawPP, 'raw pp=' + rawPP + ' avg pp=' + avgPP);
+});
+
+ok('真值变了还能跟上(时间常数够快)', () => {
+    const out = ema([...Array(100).fill(16000), ...Array(20).fill(0)]);   // 翻个面, AZ 掉到 0
+    assert.ok(out[119] < 16000 * 0.15, 'still at ' + out[119]);          // 200ms 内走到 85%
+});
+
 console.log('\n' + pass + ' passed');

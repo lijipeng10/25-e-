@@ -42,9 +42,11 @@ static float    s_gyro_bias;        /* 零偏(LSB) */
  * 循迹的【阻尼项】要的是角速度 —— 见 line_follow.c 里 LF_GYRO_KD 的说明。 */
 static int16_t  s_rate_x10;
 
-/* ★ 最近一次的 6 轴原始值: 0~2 = AX AY AZ, 3~5 = GX GY GZ。
- *   存的是【没换算的 LSB】, 只给屏显看传感器通不通, 控制逻辑不用它。 */
-static int16_t  s_raw[6];
+/* ★ 6 轴原始值(指数平均后): 0~2 = AX AY AZ, 3~5 = GX GY GZ。
+ *   存的是【没换算的 LSB】, 只给屏显看传感器通不通, 控制逻辑不用它。
+ *   ★ 为什么平滑: 单次采样本身抖几百 LSB, 100ms 抓一张快照的话,
+ *     屏幕上每次都是不同的随机值, 看着就是"乱跳", 根本读不出数。 */
+static int32_t  s_raw[6];
 
 /* ---- 底层: 写寄存器(单次 START+STOP) ---- */
 static int i2c_write_reg(uint8_t reg, uint8_t val)
@@ -203,6 +205,8 @@ void mpu6050_update(void)
 {
     uint8_t b[14];
     uint32_t now, dt;
+    int16_t raw[6];
+    uint8_t i;
     float dps;
 
     /* 一次读完 6 轴(0x3B 起 14 字节, 中间 b[6]~b[7] 是温度, 跳过) */
@@ -211,14 +215,21 @@ void mpu6050_update(void)
         return;
     }
 
-    s_raw[0] = (int16_t)(((uint16_t)b[0] << 8) | b[1]);     /* AX */
-    s_raw[1] = (int16_t)(((uint16_t)b[2] << 8) | b[3]);     /* AY */
-    s_raw[2] = (int16_t)(((uint16_t)b[4] << 8) | b[5]);     /* AZ */
-    s_raw[3] = (int16_t)(((uint16_t)b[8] << 8) | b[9]);     /* GX */
-    s_raw[4] = (int16_t)(((uint16_t)b[10] << 8) | b[11]);   /* GY */
-    s_raw[5] = (int16_t)(((uint16_t)b[12] << 8) | b[13]);   /* GZ */
+    raw[0] = (int16_t)(((uint16_t)b[0] << 8) | b[1]);       /* AX */
+    raw[1] = (int16_t)(((uint16_t)b[2] << 8) | b[3]);       /* AY */
+    raw[2] = (int16_t)(((uint16_t)b[4] << 8) | b[5]);       /* AZ */
+    raw[3] = (int16_t)(((uint16_t)b[8] << 8) | b[9]);       /* GX */
+    raw[4] = (int16_t)(((uint16_t)b[10] << 8) | b[11]);     /* GY */
+    raw[5] = (int16_t)(((uint16_t)b[12] << 8) | b[13]);     /* GZ */
 
-    dps = ((float)s_raw[5] - s_gyro_bias) / GYRO_LSB_PER_DPS;   /* 度/秒 */
+    /* 指数平均: 每次挪 1/8。10ms 采一次 -> 时间常数约 80ms, 看着稳但不迟钝 */
+    for (i = 0U; i < 6U; i++)
+    {
+        s_raw[i] += ((int32_t)raw[i] - s_raw[i]) / 8;
+    }
+
+    /* ★ 角速度用【瞬时值 raw[5]】, 不用平滑值: 循迹阻尼项要的是快, 不是稳 */
+    dps = ((float)raw[5] - s_gyro_bias) / GYRO_LSB_PER_DPS;     /* 度/秒 */
 
     /* 记下瞬时角速度(0.1 度/秒) —— 循迹的阻尼项要用它 */
     s_rate_x10 = (int16_t)(dps * 10.0f);
@@ -274,7 +285,7 @@ void mpu6050_get_raw(int16_t *raw)
 
     for (i = 0U; i < 6U; i++)
     {
-        raw[i] = s_raw[i];
+        raw[i] = (int16_t)s_raw[i];
     }
 }
 

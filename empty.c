@@ -9,6 +9,10 @@
 #include "mpu6050.h"            /* mpu6050_ping / mpu6050_init / mpu6050_update */
 #include "line_follow.h"        /* line_follow_init / line_follow_step / line_follow_get_* */
 
+/* 屏幕刷新周期(ms)。只影响"看得多勤", 不影响数值稳不稳 ——
+ * 数值的稳定性靠 mpu6050.c 里的指数平均, 把这个调快只会让画面更跳。 */
+#define IMU_SHOW_PERIOD_MS  100U
+
 /* 灰度 8 路最近一次读数, 由 show_imu() 每 100ms 刷一次 */
 static uint16_t gray_buf[GRAYSCALE_SENSOR_CHANNELS];
 
@@ -44,7 +48,7 @@ static void show_imu(void)
     u8 bitmap[GRAYSCALE_SENSOR_CHANNELS + 1U];
     u8 i;
 
-    if ((tick_get_ms() - last) < 100U)
+    if ((tick_get_ms() - last) < IMU_SHOW_PERIOD_MS)
     {
         return;
     }
@@ -127,12 +131,6 @@ int main(void)
         mpu6050_init();     /* 标定零偏, 这 ~400ms 车必须静止 */
     }
 
-    /* ★ 10ms 分频【只在这一处做】: 陀螺仪积分和循迹 step 共用同一拍。
-     *   原来 empty.c 里的 mpu_tick() 已拆掉 —— 它的 10ms 分频搬到这个循环里,
-     *   和 line_follow_step() 共用, 避免两个 10ms 分频器各走各的。
-     *   因此【不】再给 mpu6050.c 加 mpu6050_poll(): 那会和这里重复分频,
-     *   陀螺仪的 dt 和循迹的节拍会漂开, 而且多套一层反而更难读。
-     *   mpu6050_update() 本身留在 mpu6050.c, 只是由这里按 10ms 节拍调。 */
     while (1)
     {
         keynum = key_getnum();

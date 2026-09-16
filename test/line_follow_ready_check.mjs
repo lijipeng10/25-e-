@@ -98,4 +98,26 @@ ok('轮子被卡住(速度恒 0) 也算故障, 这是有意的', () => {
     assert.ok(sim(() => 0, 400).trip >= 0);
 });
 
+// ---- 4. 电机极性: 实测确认过的那一组, 谁再改都得先解释清楚 ----
+// (实测: 原来 A路倒转、B路是对的; 一度把两个都翻了, 结果 B路反而倒转)
+const { readFileSync } = await import('node:fs');
+const { fileURLToPath } = await import('node:url');
+const { dirname, join } = await import('node:path');
+const root = join(dirname(fileURLToPath(import.meta.url)), '..');
+const motorSrc = readFileSync(join(root, 'hardware/motor.c'), 'utf8');
+const fnSrc = motorSrc.split('void motor_set_direction')[1].split('void motor_set_duty')[0];
+
+// 取某个电机 direction == 1 分支里的引脚操作, 例: 'set1,clear2'
+const forwardPins = (id) => {
+    const seg = fnSrc.split('if(id == ' + id + ')')[1];
+    const dir1 = seg.split('if(direction == 1)')[1].split('else if')[0];
+    return [...dir1.matchAll(/DL_GPIO_(set|clear)Pins\(motor_\w+?IN(\d)_PORT/g)]
+        .map((m) => m[1] + m[2]).join(',');
+};
+
+ok('两个电机 direction=1 都是 拉高 IN1 + 拉低 IN2 (实测极性, 勿改)', () => {
+    assert.equal(forwardPins(1), 'set1,clear2', 'A路(左轮)极性被改了');
+    assert.equal(forwardPins(2), 'set1,clear2', 'B路(右轮)极性被改了');
+});
+
 console.log('\n' + pass + ' passed');

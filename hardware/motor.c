@@ -41,7 +41,7 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     // 设置电机方向
     if(id == 1)
     {
-        if(direction == 1) // 正转(车往前走) —— 实测原来这两行写反了, 已对调
+        if(direction == 1) // 正转(车往前走) —— ★ 实测: A路(左轮)必须用这一组, 原工程那组是倒转的
         {
             DL_GPIO_setPins(motor_AIN1_PORT, motor_AIN1_PIN);
             DL_GPIO_clearPins(motor_AIN2_PORT, motor_AIN2_PIN);
@@ -59,15 +59,15 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     }
     else if(id == 2)
     {
-        if(direction == 1) // 正转(车往前走) —— 实测原来这两行写反了, 已对调
-        {
-            DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
-            DL_GPIO_setPins(motor_BIN2_PORT, motor_BIN2_PIN);
-        }
-        else if(direction == 2) // 反转
+        if(direction == 1) // 正转(车往前走) —— ★ 实测: B路(右轮)用这一组才对, 【不要】再对调
         {
             DL_GPIO_setPins(motor_BIN1_PORT, motor_BIN1_PIN);
             DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
+        }
+        else if(direction == 2) // 反转
+        {
+            DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
+            DL_GPIO_setPins(motor_BIN2_PORT, motor_BIN2_PIN);
         }
         else // 停止
         {

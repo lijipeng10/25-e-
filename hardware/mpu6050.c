@@ -23,7 +23,6 @@ static uint8_t s_addr = MPU_ADDR;
 #define MPU_REG_CONFIG    0x1A
 #define MPU_REG_GYROCFG   0x1B
 #define MPU_REG_ACCEL_XOUT 0x3B     /* 从这里连续读 14 字节 = 6 轴 + 温度 */
-#define MPU_REG_ACCELCFG  0x1C
 #define MPU_REG_GYRO_Z    0x47
 #define MPU_REG_PWR_MGMT  0x6B
 #define MPU_REG_WHOAMI    0x75
@@ -48,17 +47,6 @@ static int16_t  s_rate_x10;
  *   ★ 为什么平滑: 单次采样本身抖几百 LSB, 100ms 抓一张快照的话,
  *     屏幕上每次都是不同的随机值, 看着就是"乱跳", 根本读不出数。 */
 static int32_t  s_raw[6];
-
-/* ★★ 临时诊断用, 查完就删: 判断"数值乱跳"到底是传感器噪声还是 I2C 读坏了 ★★
- *   s_ok  = 成功更新次数(每秒应该在 80~100)
- *   s_err = 读失败次数(应该恒为 0)
- *   s_bad = 同一段连读两次、有轴差超过 2000 LSB 的次数(应该恒为 0,
- *           不为 0 就是 I2C 把数据读错位了, 不是噪声)
- *   s_cfg = init 时回读 0x1A/0x1B/0x1C, 确认配置真的写进去了 */
-static uint32_t s_ok;
-static uint32_t s_err;
-static uint32_t s_bad;
-static uint8_t  s_cfg[3];
 
 /* ---- 底层: 写寄存器(单次 START+STOP) ---- */
 static int i2c_write_reg(uint8_t reg, uint8_t val)
@@ -198,9 +186,6 @@ void mpu6050_init(void)
     s_yaw_x10 = 0;
     s_last_ms = 0U;
     s_gyro_bias = 0.0f;
-    s_ok = 0U;
-    s_err = 0U;
-    s_bad = 0U;
 
     delay_ms(50);                                   /* 上电稳定 */
 
@@ -209,11 +194,6 @@ void mpu6050_init(void)
     (void)i2c_write_reg(MPU_REG_CONFIG, 0x03);      /* DLPF ~44Hz */
     (void)i2c_write_reg(MPU_REG_GYROCFG, 0x08);     /* 陀螺 ±500 dps */
     delay_ms(10);
-
-    /* ★ 临时诊断: 回读三个配置寄存器, 确认写真的落地了(期望 3 / 8 / 0) */
-    (void)i2c_read_reg(MPU_REG_CONFIG, &s_cfg[0], 1U);
-    (void)i2c_read_reg(MPU_REG_GYROCFG, &s_cfg[1], 1U);
-    (void)i2c_read_reg(MPU_REG_ACCELCFG, &s_cfg[2], 1U);
 
     /* 零偏标定: 要求此时静止 */
     for (i = 0; i < 200; i++)
@@ -236,40 +216,18 @@ void mpu6050_init(void)
 void mpu6050_update(void)
 {
     uint8_t b[14];
-    uint8_t c[14];
     uint32_t now, dt;
     int16_t raw[6];
-    int16_t raw2[6];
     uint8_t i;
     float dps;
 
     /* 一次读完 6 轴(0x3B 起 14 字节, 中间 b[6]~b[7] 是温度, 跳过) */
     if (i2c_read_reg(MPU_REG_ACCEL_XOUT, b, 14U) != 0)
     {
-        s_err++;
         return;
     }
 
     decode6(b, raw);
-
-    /* ★ 临时诊断: 紧接着再读同一段比对。手不可能在 1.5ms 里让角速度差 30dps,
-     *   所以 2000 LSB 的门限只会被"读错位"触发, 不会被真实运动触发。 */
-    if (i2c_read_reg(MPU_REG_ACCEL_XOUT, c, 14U) == 0)
-    {
-        decode6(c, raw2);
-
-        for (i = 0U; i < 6U; i++)
-        {
-            if ((((int32_t)raw[i] - (int32_t)raw2[i]) > 2000)
-             || (((int32_t)raw[i] - (int32_t)raw2[i]) < -2000))
-            {
-                s_bad++;
-                break;
-            }
-        }
-    }
-
-    s_ok++;
 
     /* 指数平均: 每次挪 1/8。10ms 采一次 -> 时间常数约 80ms, 看着稳但不迟钝 */
     for (i = 0U; i < 6U; i++)
@@ -328,15 +286,6 @@ int16_t mpu6050_get_rate_x10(void)
     return s_rate_x10;
 }
 
-void mpu6050_get_diag(uint32_t st[3], uint8_t cfg[3])
-{
-    st[0] = s_ok;
-    st[1] = s_err;
-    st[2] = s_bad;
-    cfg[0] = s_cfg[0];
-    cfg[1] = s_cfg[1];
-    cfg[2] = s_cfg[2];
-}
 
 void mpu6050_get_raw(int16_t *raw)
 {

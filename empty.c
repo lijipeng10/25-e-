@@ -9,14 +9,14 @@
 #include "mpu6050.h"            /* mpu6050_ping / mpu6050_init / mpu6050_update */
 #include "line_follow.h"        /* line_follow_init / line_follow_step / line_follow_get_* */
 
-/* 灰度 8 路最近一次读数, 由 show_sensors() 每 100ms 刷一次 */
+/* 灰度 8 路最近一次读数, 由 show_imu() 每 100ms 刷一次 */
 static uint16_t gray_buf[GRAYSCALE_SENSOR_CHANNELS];
 
 /* MPU6050 的 I2C 地址: 0 = 没找到, 0x68 / 0x69 = 找到了 */
 static uint8_t s_mpu = 0U;
 
-/* 显示带符号整数: 1 位符号 + 3 位数字, 12px 字体共占 6+18 = 24 像素 */
-static void show_signed3(u8 x, u8 y, int32_t v)
+/* 显示带符号整数: 1 位符号 + 5 位数字, 12px 字体共占 6+30 = 36 像素 */
+static void show_signed5(u8 x, u8 y, int32_t v)
 {
     u32 mag;
 
@@ -31,18 +31,16 @@ static void show_signed3(u8 x, u8 y, int32_t v)
         OLED_ShowChar(x, y, (u8)'+', 12);
     }
 
-    if (mag > 999U)
-    {
-        mag = 999U;             /* 只占 3 位, 超了就截断, 免得压到右边的 Y */
-    }
-
-    OLED_ShowNum((u8)(x + 6U), y, mag, 3, 12);
+    /* 6 轴原始值是 int16, 最多 5 位数字, 正好占满这个宽度 */
+    OLED_ShowNum((u8)(x + 6U), y, mag, 5, 12);
 }
 
-/* 显示: 每 100ms 读一次灰度 + 刷一次屏 */
-static void show_sensors(void)
+/* 显示: MPU6050 六轴原始值 + 8 路灰度, 每 100ms 刷一次屏 */
+/* ★ 这一屏只用来"看传感器通不通", 不参与控制 */
+static void show_imu(void)
 {
     static u32 last = 0;
+    int16_t raw[6];
     u8 bitmap[GRAYSCALE_SENSOR_CHANNELS + 1U];
     u8 i;
 
@@ -55,18 +53,25 @@ static void show_sensors(void)
     /* 内部约 400us 延时, 跟着刷屏 100ms 一次就够 */
     Grayscale_Sensor_Read_All(gray_buf);
 
-    /* 第 1 行 16px: 标题 FOLLOW(6 字符 x 8px 占 x=0~47) + 当前档位 4 位(占 x=96~127) */
-    OLED_ShowString(0, 0, (u8 *)"FOLLOW", 16);
-    OLED_ShowNum(96, 0, motor_test_duty(), 4, 16);
+    mpu6050_get_raw(raw);       /* raw[0..2] = AX AY AZ, raw[3..5] = GX GY GZ */
 
-    /* 标题和档位中间的 x=48~95 是 16px 的 6 个字符位: 陀螺仪没接时在这里报 MPU:NO */
-    /* 接上了就整段不画, 位置留空 —— 免得 Y 一直显示 +000 让人以为是"航向不动" */
-    if (s_mpu == 0U)
-    {
-        OLED_ShowString(48, 0, (u8 *)"MPU:NO", 16);
-    }
+    /* 12px 一行放两个轴: 左列 标签 x=0 / 数值 x=14, 右列 标签 x=64 / 数值 x=78 */
+    OLED_ShowString(0, 0, (u8 *)"AX", 12);
+    show_signed5(14, 0, (int32_t)raw[0]);
+    OLED_ShowString(64, 0, (u8 *)"AY", 12);
+    show_signed5(78, 0, (int32_t)raw[1]);
 
-    /* 第 2 行 12px: 8 路灰度位图, 读到 = 1, 没读到 = 0 */
+    OLED_ShowString(0, 12, (u8 *)"AZ", 12);
+    show_signed5(14, 12, (int32_t)raw[2]);
+    OLED_ShowString(64, 12, (u8 *)"GX", 12);
+    show_signed5(78, 12, (int32_t)raw[3]);
+
+    OLED_ShowString(0, 24, (u8 *)"GY", 12);
+    show_signed5(14, 24, (int32_t)raw[4]);
+    OLED_ShowString(64, 24, (u8 *)"GZ", 12);
+    show_signed5(78, 24, (int32_t)raw[5]);
+
+    /* 第 4 行: 8 路灰度位图, 读到 = 1, 没读到 = 0 */
     for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++)
     {
         if (gray_buf[i] != 0U)
@@ -80,21 +85,14 @@ static void show_sensors(void)
     }
     bitmap[GRAYSCALE_SENSOR_CHANNELS] = (u8)'\0';
 
-    OLED_ShowString(0, 16, (u8 *)"G", 12);
-    OLED_ShowString(12, 16, bitmap, 12);        /* 8 位 x 6px 占 x=12~59 */
+    OLED_ShowString(0, 36, (u8 *)"G", 12);
+    OLED_ShowString(12, 36, bitmap, 12);        /* 8 位 x 6px 占 x=12~59 */
 
-    /* 第 3 行 12px: 循迹偏差 error(线最左 -100 ~ 最右 +100), 符号 + 3 位占 x=12~35 */
-    OLED_ShowString(0, 28, (u8 *)"E", 12);
-    show_signed3(12, 28, (int32_t)line_follow_get_error());
-
-    /* 第 4 行 12px: 外环给的目标航向 psi_ref, 换算成度(psi_ref 原始单位是 0.1 度, 除以 10) */
-    /* ★ 单位必须和第 5 行的 Y 一致(都是度), 不然 P 和 Y 摆在一起没法直接比 */
-    OLED_ShowString(0, 40, (u8 *)"P", 12);
-    show_signed3(12, 40, (int32_t)(line_follow_get_psi_ref() / 10));
-
-    /* 第 5 行 12px: 陀螺仪实测航向, 单位也是度(= yaw_x10 / 10), 可直接和上一行的 P 对着看 */
-    OLED_ShowString(0, 52, (u8 *)"Y", 12);
-    show_signed3(12, 52, (int32_t)(mpu6050_get_yaw_x10() / 10));
+    /* 第 5 行: 陀螺仪没接时报警 —— 否则一排 +00000 会被当成"读到了" */
+    if (s_mpu == 0U)
+    {
+        OLED_ShowString(0, 48, (u8 *)"MPU:NO", 12);
+    }
 
     OLED_Refresh();
 }
@@ -151,6 +149,6 @@ int main(void)
             line_follow_step();     /* 循迹要用这一拍刚更新好的航向 */
         }
 
-        show_sensors();             /* 灰度 + 刷屏: 内部自带 100ms 限速 */
+        show_imu();                 /* 六轴原始值 + 灰度 + 刷屏: 内部自带 100ms 限速 */
     }
 }

@@ -3,7 +3,7 @@
  * 每 10ms 调一次 line_follow_step(): 读 8 路灰度 -> 算偏差 error(-100 线在最左 ~
  * +100 线在最右) -> 双环算转向量 steer -> 左右差速输出。外环把位置误差变成目标航向,
  * 内环追目标航向; 大角度转弯不靠它, 靠"停车原地转向"。
- * ★ 依赖: motor / grayscale_sensor / encoder / mpu6050 / pid / tick。
+ * ★ 依赖: motor / grayscale_sensor / encoder / mpu6050 / tick。
  * ★ 下面"可调参数"里带 SPEED 字样的单位都是 mm/s(轮速闭环), 不是占空比。
  */
 #include "line_follow.h"
@@ -11,7 +11,6 @@
 
 #include "motor.h"              /* motor_set_direction / motor_set_duty */
 #include "grayscale_sensor.h"   /* Grayscale_Sensor_Read_All */
-#include "pid.h"                /* 通用 PID */
 #include "tick.h"               /* tick_get_ms */
 #include "mpu6050.h"            /* mpu6050_get_rate_x10: 阻尼项要用角速度 */
 #include "encoder.h"            /* speed_1 / speed_2 */
@@ -40,6 +39,8 @@
 #define LF_HEAD_KP          100     /* 内环比例: 每 10 度航向差给多少 mm/s(取 100 -> 差 30 度就顶到上限); 小=转不动, 大=抖 */
 #define LF_HEAD_KI          0       /* 内环积分: 先不用; 调稳之后它可以补掉稳态航向差 */
 #define LF_HEAD_KD          0       /* 内环微分: 灰度误差是台阶信号, 开了只会放大台阶; 要阻尼请用 LF_GYRO_KD */
+/* ★ 内环现在是【纯比例】: 只有 LF_HEAD_KP 真正参与运算, 见 line_follow_step() 里那条算术。 */
+/* ★ LF_HEAD_KI / LF_HEAD_KD 留着是为了将来真要加回积分/微分时有个落脚点, 当前【没有被任何代码引用】。 */
 
 /* 双环增益的编译期检查: 这两个取 0 都不是"关掉", 而是【车会失控】。 */
 #if (LF_POS_KP <= 0)
@@ -99,7 +100,6 @@ static const int8_t LF_WEIGHT[GRAYSCALE_SENSOR_CHANNELS] =
     -7, -5, -3, -1, +1, +3, +5, +7
 };
 
-static Pid     s_pid;               /* 转向 PID */
 static uint8_t s_running;           /* 1 = 正在循迹 */
 static uint8_t s_bits;              /* 最近一次灰度位图(1 = 压线, 已按 LF_LINE_LEVEL 判断) */
 static uint16_t s_raw[GRAYSCALE_SENSOR_CHANNELS];  /* 最近一次灰度的原始值(0/1) */
@@ -241,10 +241,8 @@ static void lf_pivot(int8_t dir)
 
 void line_follow_init(void)
 {
-    /* 初始化【内环(航向环)】PID: div = 100 -> 输出正好是 LF_HEAD_KP*e_psi/100;
-     * 输出限幅 = LF_MAX_STEER(内环直接出转向量), 死区给 0(航向是连续量) */
-    pid_init(&s_pid, LF_HEAD_KP, LF_HEAD_KI, LF_HEAD_KD, 100,
-             0, LF_MAX_STEER, 0, LF_STEP_MS);
+    /* ★ 内环改成纯比例算术之后, 这里没有控制器对象要初始化了 —— 那条算术直接写在 line_follow_step() 里 */
+    /*   (旧代码的 pid_init 是 9 个实参的旧接口, 对不上现在增量式的 pid.h, 已删除) */
 
     s_running    = 0U;
     s_bits       = 0U;
@@ -265,7 +263,7 @@ void line_follow_init(void)
 
 void line_follow_start(void)
 {
-    pid_reset(&s_pid);          /* 清掉上次的积分/微分残留, 不然起步会猛地一拐 */
+    /* ★ 纯比例内环没有积分/微分残留可清, 所以这里不需要 pid_reset() */
 
     /* ★★ 航向零点(第一个清零点) —— 按 KEY1 启动的这一瞬间, 车【必须摆正、对着线的方向】,
      * 这一瞬间的车头方向就是整段路的 0 度。起步时歪着, 车就会一路带着这个初始偏差跑。
@@ -402,7 +400,7 @@ void line_follow_step(void)
          *   原地(yaw≈0), 有门槛车就永远认不回来, 表现为"直线都会掉头" */
         if ((on_line != 0U) && (error <= LF_PIVOT_OK) && (error >= -LF_PIVOT_OK))
         {
-            pid_reset(&s_pid);      /* 清掉转向过程中残留的量, 免得接着猛拐一下 */
+            /* ★ 纯比例内环没有积分/微分残留, 这里不需要 pid_reset() */
 
             /* ★ 航向零点(第二个清零点见文件上面): 能走到这里说明线已经在中间附近, 车头刚
              * 对准新的这段线, 现在这个方向就该是新的 0 度。不清零的话转完弯内环会拼命把车头
@@ -508,9 +506,21 @@ void line_follow_step(void)
 
         /* ---------- 内环: 让车头去追目标航向 ----------
          * ★ e_psi > 0 = "还要往左转", 而往左转要给【负】的 steer -> 取负号。
-         *   内环只吃航向差, 不吃位置误差 —— 位置信息已经在 psi_ref 里了。 */
+         *   内环只吃航向差, 不吃位置误差 —— 位置信息已经在 psi_ref 里了。
+         * ★ 内环是【纯比例】: 等价于旧 PID 那组配置(div = 100, 死区 0, 输出限幅 LF_MAX_STEER)。 */
         e_psi = psi_ref - mpu6050_get_yaw_x10();
-        steer = -pid_update(&s_pid, e_psi, LF_STEP_MS);
+        steer = -((int32_t)LF_HEAD_KP * e_psi) / 100;
+
+        /* ★ 限幅: 旧 pid_init 里的 out_max = LF_MAX_STEER 就是干这个的, 保留 */
+        if (steer > (int32_t)LF_MAX_STEER)
+        {
+            steer = (int32_t)LF_MAX_STEER;
+        }
+
+        if (steer < -(int32_t)LF_MAX_STEER)
+        {
+            steer = -(int32_t)LF_MAX_STEER;
+        }
 
         /* ★ 记"这一次想往哪边拐"必须取【加阻尼之前】的符号: 阻尼在急弯上可能大到把 steer
          *   压成反号, 那样记下来的方向就是反的 -> 丢线时把车往错的方向带。 */

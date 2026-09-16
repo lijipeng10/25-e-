@@ -133,3 +133,38 @@ void motor_pid_update(uint8_t id)
 
     motor_set_duty(id, (uint16_t)out);
 }
+
+/* ---------------------------------------------------------------------------
+ *  KEY1 阶梯加速测速
+ *
+ *  原来这段(speed_table / speed_index / 按键加档逻辑)写在 empty.c 的 main 里,
+ *  主程序太冗余。档位表和加档逻辑本来就属于电机模块, 搬到这里。
+ *
+ *  ★ 档位表和下标都是 static: 外面只能"按一下走一档"(motor_test_step()),
+ *    或者读当前档位值去显示(motor_test_duty()), 改不了这张表。
+ *  ★ 档位值沿用原来那一张表, 一个数都没动。
+ * -------------------------------------------------------------------------*/
+static const uint16_t s_test_table[] =
+    { 0U, 100U, 200U, 300U, 400U, 500U, 600U, 700U, 800U, 900U };
+static uint8_t s_test_index = 0U;      /* 当前档位下标, 记录在这里给屏幕读 */
+
+void motor_test_step(void)
+{
+    s_test_index++;                     /* 下一档 */
+
+    if (s_test_index >= (uint8_t)(sizeof(s_test_table) / sizeof(s_test_table[0])))
+    {
+        s_test_index = 0U;              /* 到头回到 0 */
+    }
+
+    motor_set_direction(1, 1);
+    motor_set_direction(2, 1);
+
+    motor_pid_set(1, (float)s_test_table[s_test_index]);
+    motor_pid_set(2, (float)s_test_table[s_test_index]);
+}
+
+uint16_t motor_test_duty(void)
+{
+    return s_test_table[s_test_index];
+}

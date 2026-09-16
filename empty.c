@@ -1,23 +1,13 @@
 #include "ti_msp_dl_config.h"
 #include <stdint.h>
-#include "key.h"            /* key_init / key_tick / key_getnum */
-#include "motor.h"          /* motor_init / motor_set_direction / motor_set_duty / motor_pid_* */
-#include "encoder.h"        /* encoder_get_speed / speed_1 / speed_2 */
+#include "key.h"            /* key_init / key_getnum */
+#include "motor.h"          /* motor_init / motor_pid_init / motor_test_step / motor_test_duty */
+#include "encoder.h"        /* encoder_init (测速和脉冲中断都在 encoder.c) */
 #include "oled.h"
 #include "tick.h"           /* tick_init / tick_get_ms */
 #include "grayscale_sensor.h"   /* Grayscale_Sensor_Init / Grayscale_Sensor_Read_All */
 #include "mpu6050.h"            /* mpu6050_ping / mpu6050_init / mpu6050_update */
 #include "line_follow.h"        /* line_follow_init / line_follow_step / line_follow_get_* */
-
-uint8_t keynum;
-extern uint32_t encoder_1_A;
-extern uint32_t encoder_2_A;
-float speed_1 = 0;
-float speed_2 = 0;
-
-/* KEY1 阶梯加速: 每按一次升一档【目标速度】(mm/s) */
-static const uint16_t speed_table[] = { 0U, 100U, 200U, 300U, 400U, 500U, 600U, 700U, 800U, 900U };
-static u8 speed_index = 0U;
 
 /* 灰度 8 路最近一次读数, 由 show_sensors() 每 100ms 刷一次 */
 static uint16_t gray_buf[GRAYSCALE_SENSOR_CHANNELS];
@@ -49,27 +39,6 @@ static void show_signed3(u8 x, u8 y, int32_t v)
     OLED_ShowNum((u8)(x + 6U), y, mag, 3, 12);
 }
 
-/* MPU6050 必须固定 10ms 更新一次: 它内部按 tick 差值积分航向 */
-/* 只在 100ms 的刷屏里调会让 dt 变大, 航向会跳 */
-/* 循迹 step 也挂在这个 10ms 节拍上, 并且必须排在 mpu6050_update() 之后 */
-static void mpu_tick(void)
-{
-    static uint32_t last = 0U;
-
-    if ((tick_get_ms() - last) < 10U)
-    {
-        return;
-    }
-
-    last = tick_get_ms();
-
-    mpu6050_update();
-
-    /* ★ 必须排在 mpu6050_update() 【之后】: 循迹内环要用这一拍刚更新好的航向/角速度 */
-    /* ★ 全程不调 line_follow_start() -> s_running 恒为 0, step() 只读灰度算偏差, 不驱动电机 */
-    line_follow_step();
-}
-
 /* 显示: 每 100ms 读一次灰度 + 刷一次屏 */
 static void show_sensors(void)
 {
@@ -88,7 +57,7 @@ static void show_sensors(void)
 
     /* 第 1 行 16px: 标题 FOLLOW(6 字符 x 8px 占 x=0~47) + 当前档位 4 位(占 x=96~127) */
     OLED_ShowString(0, 0, (u8 *)"FOLLOW", 16);
-    OLED_ShowNum(96, 0, speed_table[speed_index], 4, 16);
+    OLED_ShowNum(96, 0, motor_test_duty(), 4, 16);
 
     /* 标题和档位中间的 x=48~95 是 16px 的 6 个字符位: 陀螺仪没接时在这里报 MPU:NO */
     /* 接上了就整段不画, 位置留空 —— 免得 Y 一直显示 +000 让人以为是"航向不动" */
@@ -132,6 +101,9 @@ static void show_sensors(void)
 
 int main(void)
 {
+    uint8_t keynum;
+    uint32_t last_10ms = 0U;
+
     SYSCFG_DL_init();
 
     /* ★ 只初始化, 【不】调 line_follow_start(): 没启动时 step() 只读传感器、算偏差, 不动电机 */
@@ -157,54 +129,28 @@ int main(void)
         mpu6050_init();     /* 标定零偏, 这 ~400ms 车必须静止 */
     }
 
+    /* ★ 10ms 分频【只在这一处做】: 陀螺仪积分和循迹 step 共用同一拍。
+     *   原来 empty.c 里的 mpu_tick() 已拆掉 —— 它的 10ms 分频搬到这个循环里,
+     *   和 line_follow_step() 共用, 避免两个 10ms 分频器各走各的。
+     *   因此【不】再给 mpu6050.c 加 mpu6050_poll(): 那会和这里重复分频,
+     *   陀螺仪的 dt 和循迹的节拍会漂开, 而且多套一层反而更难读。
+     *   mpu6050_update() 本身留在 mpu6050.c, 只是由这里按 10ms 节拍调。 */
     while (1)
     {
         keynum = key_getnum();
 
         if (keynum == 1U)
         {
-            speed_index++;              /* 下一档 */
-
-            if (speed_index >= (u8)(sizeof(speed_table) / sizeof(speed_table[0])))
-            {
-                speed_index = 0U;       /* 到头回到 0 */
-            }
-
-            motor_set_direction(1, 1);
-            motor_set_direction(2, 1);
-
-            motor_pid_set(1, (float)speed_table[speed_index]);
-            motor_pid_set(2, (float)speed_table[speed_index]);
+            motor_test_step();      /* 阶梯加速测速(表和时间逻辑在 motor.c) */
         }
 
-        mpu_tick();             /* MPU6050: 固定 10ms 一次 */
-        show_sensors();         /* 灰度 + 刷屏: 100ms 一次 */
+        if ((tick_get_ms() - last_10ms) >= 10U)
+        {
+            last_10ms = tick_get_ms();
+            mpu6050_update();       /* 必须先更新陀螺仪 */
+            line_follow_step();     /* 循迹要用这一拍刚更新好的航向 */
+        }
+
+        show_sensors();             /* 灰度 + 刷屏: 内部自带 100ms 限速 */
     }
-}
-
-void GROUP1_IRQHandler(void)
-{
-    switch (DL_GPIO_getPendingInterrupt(GPIOB))
-    {
-        case encoder_E1A_IIDX:
-            encoder_1_A++;
-            encoder_2_A++;
-            break;
-
-        default:
-            break;
-    }
-}
-
-void key_encoder_INST_IRQHandler(void)
-{
-    DL_Timer_clearInterruptStatus(key_encoder_INST, DL_TIMER_INTERRUPT_ZERO_EVENT);
-
-    key_tick();                 /* 按键扫描 */
-
-    encoder_get_speed(1);       /* 测速(顺便清零脉冲计数) */
-    encoder_get_speed(2);
-
-    motor_pid_update(1);
-    motor_pid_update(2);
 }

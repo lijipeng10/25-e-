@@ -6,8 +6,11 @@
 
 uint32_t encoder_1_A;
 uint32_t encoder_2_A;
-extern float speed_1;
-extern float speed_2;
+
+/* 实测速度 mm/s。定义放在本模块里(原来定义在 empty.c, 声明却在这里,
+   主程序不该持有电机测速的状态) —— encoder.h 里只有 extern 声明。 */
+float speed_1 = 0;
+float speed_2 = 0;
 
 void encoder_init(void)
 {
@@ -29,5 +32,22 @@ void encoder_get_speed(uint8_t id)
     {
         speed_2 = (float)encoder_2_A / ENCODER_PULSE * ENCODER_WHEEL_D * PI * 20;   /* mm/s */
         encoder_2_A = 0;                                                            /* 清零 */
+    }
+}
+
+/* 编码器脉冲计数中断(GPIOB, 共享 IRQ 1)。
+   原来写在 empty.c 里 —— 它就是数脉冲的, 本来就该待在 encoder.c。
+   ★ 名字 GROUP1_IRQHandler 由 SysConfig 的启动文件引用, 不要改名。 */
+void GROUP1_IRQHandler(void)
+{
+    switch (DL_GPIO_getPendingInterrupt(GPIOB))
+    {
+        case encoder_E1A_IIDX:
+            encoder_1_A++;
+            encoder_2_A++;
+            break;
+
+        default:
+            break;
     }
 }

@@ -121,10 +121,14 @@
 | 中断 | 触发源 | 用途 | 实现位置 |
 | --- | --- | --- | --- |
 | `SysTick_Handler` | SysTick 1 ms | 累加毫秒时基 | `system/tick.c` |
-| `main_timer_INST_IRQHandler`<br>(= `TIMA0_IRQHandler`) | TIMA0, 50 ms | `key_tick()` 扫键 | `empty.c` |
-| `GROUP1_IRQHandler` | GPIOA/GPIOB | MT6816 编码器计数(遗留) | `hardware/sm_encoder.c` |
+| `key_encoder_INST_IRQHandler`<br>(= `TIMG7_IRQHandler`) | key_encoder = TIMG7, 50 ms | `key_tick()` 扫键 + `encoder_get_speed()` 测速 + `motor_pid_update()` | `hardware/key.c` |
+| `GROUP1_IRQHandler` | GPIOA/GPIOB | 轮速编码器 E1A 脉冲计数(双沿)；遗留的 MT6816 若启用也走这个向量 | `hardware/encoder.c` |
 | `UART1_IRQHandler` | UART1 | 视觉串口收字节(遗留) | `system/uart.c` |
 | `TIMA1_IRQHandler` / `TIMG12_IRQHandler` | TIMA1 / TIMG12 | 步进电机步进(遗留) | `hardware/sm_motor.c` |
+
+> ★ **2026/09 重构**：这两个中断处理函数原来都写在 `empty.c` 里，已各自搬回自己的模块
+> （见上表）；`empty.c` 现在**只剩显示函数 + `main()`**（阶梯测速的档位表搬到
+> `hardware/motor.c`，10ms 分频只在 `main()` 里做一处，不再叫 `mpu_tick()`）。
 
 ### 4.1 轮速编码器 —— **已实现（速度闭环）**
 

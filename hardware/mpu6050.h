@@ -15,7 +15,10 @@
 
 void    mpu6050_init(void);          /* 初始化 I2C + 配置量程/滤波 + 零偏标定
                                       * ★ 调用前车必须【静止】, 而且标定要 ~400ms */
-void    mpu6050_update(void);        /* 建议 5ms 周期调用: 读陀螺 + 积分航向 */
+void    mpu6050_update(void);        /* 建议 5ms 周期调用: 读陀螺 + 积分航向
+                                      * ★ 10ms 分频【由 empty.c 的 main 循环统一做】,
+                                      *   和 line_follow_step() 共用同一拍, 所以这里
+                                      *   不再提供 mpu6050_poll() —— 两处分频会各走各的 */
 int32_t mpu6050_get_yaw_x10(void);   /* 航向角(0.1°), 积分值, 久了会漂 */
 void    mpu6050_zero_yaw(void);      /* 把当前航向清零(上电/摆正时调用) */
 

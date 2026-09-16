@@ -23,7 +23,7 @@
 void encoder_init(void);
 void encoder_get_speed(uint8_t id);
 
-/* 原始脉冲计数, 由 GROUP1 中断累加(中断处理在 empty.c 里) */
+/* 原始脉冲计数, 由 GROUP1 中断累加(中断处理在本模块 encoder.c 里) */
 extern uint32_t encoder_1_A;
 extern uint32_t encoder_2_A;
 

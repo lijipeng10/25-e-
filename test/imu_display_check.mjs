@@ -89,4 +89,41 @@ ok('真值变了还能跟上(时间常数够快)', () => {
     assert.ok(out[119] < 16000 * 0.15, 'still at ' + out[119]);          // 200ms 内走到 85%
 });
 
+// ---- 5. 诊断用的"连读两次比对"逻辑: 与 mpu6050.c update() 里的门限一致 ----
+const mismatch = (a, b) => {
+    const x = decode(a), y = decode(b);
+    for (let i = 0; i < 6; i++) {
+        const d = x[i] - y[i];
+        if (d > 2000 || d < -2000) return true;
+    }
+    return false;
+};
+
+const burst = (ax, ay, az, gx, gy, gz) => {
+    const w = (v) => [(v >> 8) & 0xff, v & 0xff];
+    return [...w(ax), ...w(ay), ...w(az), 0x00, 0x00, ...w(gx), ...w(gy), ...w(gz)];
+};
+
+ok('两次读数只差一点噪声 -> 不算读坏', () => {
+    const a = burst(0, 0, 16000, 0, 0, 5);
+    const b = burst(300, -200, 15700, 400, -100, -295);
+    assert.equal(mismatch(a, b), false);
+});
+
+ok('真·快速转动(1500 LSB 差) 也不会误报', () => {
+    // 1500 LSB / 65.5 = 23 dps, 1.5ms 内差这么多需要 15000 dps/s, 手做不到
+    assert.equal(mismatch(burst(0, 0, 16000, 0, 0, 0), burst(0, 0, 16000, 0, 0, 1500)), false);
+});
+
+ok('门限边界: 差 2000 放过, 2001 判坏', () => {
+    assert.equal(mismatch(burst(0, 0, 16000, 0, 0, 0), burst(0, 0, 16000, 0, 0, 2000)), false);
+    assert.equal(mismatch(burst(0, 0, 16000, 0, 0, 0), burst(0, 0, 16000, 0, 0, 2001)), true);
+});
+
+ok('字节错位(丢一个字节) 一定被判坏', () => {
+    const good = burst(100, 200, 16000, 30, 40, 50);
+    const shifted = [...good.slice(1), 0x00];       // 少收一个字节 -> 整体前移
+    assert.equal(mismatch(good, shifted), true);
+});
+
 console.log('\n' + pass + ' passed');

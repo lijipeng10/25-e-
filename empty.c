@@ -13,9 +13,6 @@
  * 数值的稳定性靠 mpu6050.c 里的指数平均, 把这个调快只会让画面更跳。 */
 #define IMU_SHOW_PERIOD_MS  100U
 
-/* 灰度 8 路最近一次读数, 由 show_imu() 每 100ms 刷一次 */
-static uint16_t gray_buf[GRAYSCALE_SENSOR_CHANNELS];
-
 /* MPU6050 的 I2C 地址: 0 = 没找到, 0x68 / 0x69 = 找到了 */
 static uint8_t s_mpu = 0U;
 
@@ -39,25 +36,35 @@ static void show_signed5(u8 x, u8 y, int32_t v)
     OLED_ShowNum((u8)(x + 6U), y, mag, 5, 12);
 }
 
-/* 显示: MPU6050 六轴原始值 + 8 路灰度, 每 100ms 刷一次屏 */
+/* 显示: MPU6050 六轴原始值 + 诊断计数, 每 100ms 刷一次屏 */
 /* ★ 这一屏只用来"看传感器通不通", 不参与控制 */
 static void show_imu(void)
 {
     static u32 last = 0;
+    static u32 last_cnt = 0;
+    static u32 last_rate_ms = 0;
+    static u32 rate = 0;
     int16_t raw[6];
-    u8 bitmap[GRAYSCALE_SENSOR_CHANNELS + 1U];
-    u8 i;
+    uint32_t st[3];
+    u8 cfg[3];
+    u32 now = tick_get_ms();
 
-    if ((tick_get_ms() - last) < IMU_SHOW_PERIOD_MS)
+    if ((now - last) < IMU_SHOW_PERIOD_MS)
     {
         return;
     }
-    last = tick_get_ms();
-
-    /* 内部约 400us 延时, 跟着刷屏 100ms 一次就够 */
-    Grayscale_Sensor_Read_All(gray_buf);
+    last = now;
 
     mpu6050_get_raw(raw);       /* raw[0..2] = AX AY AZ, raw[3..5] = GX GY GZ */
+    mpu6050_get_diag(st, cfg);
+
+    /* 每秒算一次更新次数: 远低于 80 就说明主循环被拖慢了 */
+    if ((now - last_rate_ms) >= 1000U)
+    {
+        rate = st[0] - last_cnt;
+        last_cnt = st[0];
+        last_rate_ms = now;
+    }
 
     /* 12px 一行放两个轴: 左列 标签 x=0 / 数值 x=14, 右列 标签 x=64 / 数值 x=78 */
     OLED_ShowString(0, 0, (u8 *)"AX", 12);
@@ -75,27 +82,28 @@ static void show_imu(void)
     OLED_ShowString(64, 24, (u8 *)"GZ", 12);
     show_signed5(78, 24, (int32_t)raw[5]);
 
-    /* 第 4 行: 8 路灰度位图, 读到 = 1, 没读到 = 0 */
-    for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++)
-    {
-        if (gray_buf[i] != 0U)
-        {
-            bitmap[i] = (u8)'1';
-        }
-        else
-        {
-            bitmap[i] = (u8)'0';
-        }
-    }
-    bitmap[GRAYSCALE_SENSOR_CHANNELS] = (u8)'\0';
-
-    OLED_ShowString(0, 36, (u8 *)"G", 12);
-    OLED_ShowString(12, 36, bitmap, 12);        /* 8 位 x 6px 占 x=12~59 */
-
-    /* 第 5 行: 陀螺仪没接时报警 —— 否则一排 +00000 会被当成"读到了" */
+    /* ★★ 第 4/5 行是【临时诊断】, 查完"数值乱跳"就换回灰度位图 ★★ */
     if (s_mpu == 0U)
     {
         OLED_ShowString(0, 48, (u8 *)"MPU:NO", 12);
+    }
+    else
+    {
+        /* 回读到的配置: 期望 C03 G08 A00 */
+        OLED_ShowString(0, 36, (u8 *)"C", 12);
+        OLED_ShowNum(8, 36, cfg[0], 2, 12);
+        OLED_ShowString(28, 36, (u8 *)"G", 12);
+        OLED_ShowNum(36, 36, cfg[1], 2, 12);
+        OLED_ShowString(56, 36, (u8 *)"A", 12);
+        OLED_ShowNum(64, 36, cfg[2], 2, 12);
+
+        /* U = 每秒更新次数; E = 读失败次数; B = 连读两次对不上的次数。E/B 该恒为 0 */
+        OLED_ShowString(0, 48, (u8 *)"U", 12);
+        OLED_ShowNum(6, 48, rate, 3, 12);
+        OLED_ShowString(30, 48, (u8 *)"E", 12);
+        OLED_ShowNum(36, 48, st[1], 4, 12);
+        OLED_ShowString(66, 48, (u8 *)"B", 12);
+        OLED_ShowNum(72, 48, st[2], 4, 12);
     }
 
     OLED_Refresh();

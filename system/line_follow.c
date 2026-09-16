@@ -28,6 +28,7 @@
 #define LF_STEER_MAX    300     /* 差速上限 mm/s; 等于 BASE 时慢轮正好能降到 0 */
 #define LF_STEER_SIGN   (+1)    /* ★★ 唯一的方向开关: 实测"越偏越远"就改成 -1 ★★ */
 #define LF_STEP_MS      10U     /* line_follow_step() 的调用周期(ms) */
+#define LF_LOST_MS      200U    /* ★ 连续看不到线多久才算【真】丢线(去抖) —— 见 step() 里的长注释 */
 
 /* 单轮命令上限: 基础 + 满差速, 快轮最多这么快 */
 #define LF_CMD_MAX      (LF_BASE_SPEED + LF_STEER_MAX)
@@ -45,8 +46,8 @@ static const int8_t LF_WEIGHT[GRAYSCALE_SENSOR_CHANNELS] =
 static uint8_t  s_running;      /* 1 = 正在循迹 */
 static uint8_t  s_lost;         /* 1 = 刚因为丢线停下来了 */
 static uint8_t  s_bits;         /* 最近一次灰度位图, bit0 = 最左 */
-static uint8_t  s_on_line;      /* 1 = 至少有一路压线 */
-static int16_t  s_error;        /* 最近一次偏差 -100 ~ +100 */
+static int16_t  s_error;        /* 控制用的偏差 -100 ~ +100(看不到线时保持上一次的值) */
+static uint16_t s_lost_ms;      /* 已经连续多少毫秒没看到线 */
 static int16_t  s_steer;        /* 最近一次差速量 mm/s */
 static int16_t  s_cmd_left;     /* 左轮命令速度 mm/s */
 static int16_t  s_cmd_right;    /* 右轮命令速度 mm/s */
@@ -134,8 +135,8 @@ void line_follow_init(void)
     s_running   = 0U;
     s_lost      = 0U;
     s_bits      = 0U;
-    s_on_line   = 0U;
     s_error     = 0;
+    s_lost_ms   = 0U;
     s_steer     = 0;
     s_cmd_left  = 0;
     s_cmd_right = 0;
@@ -149,6 +150,7 @@ void line_follow_start(void)
 {
     s_running = 1U;
     s_lost    = 0U;
+    s_lost_ms = 0U;
     s_e_min     = 0;            /* 这几项清零, 只记这一次运行 */
     s_e_max     = 0;
     s_run_ms    = 0U;
@@ -176,11 +178,27 @@ void line_follow_step(void)
 {
     int32_t steer = 0;
     int16_t e_abs = 0;
+    int16_t raw_err;
+    uint8_t seen;
 
     /* ★ 第 1 步: 读灰度、算偏差 —— 不管跑不跑都要做。
      *   屏幕上的 E 和 G 全靠它; 停着不读就没法在不启动电机的情况下核对传感器。 */
     s_bits  = lf_read_bits();
-    s_error = lf_calc_error(s_bits, &s_on_line);
+    raw_err = lf_calc_error(s_bits, &seen);
+
+    /* ★★ 丢线去抖(实测踩过, 这是真凶): 电机一转, 灰度会偶尔【整组漏读一次】——
+     *    车明明压在线上, 却读到 00000000。原来单次采样就判丢线, 结果刚起步就 LOST 停车。
+     *    改法: 看到线就刷新 s_error; 没看到就【保持上一次的误差】(转向不变),
+     *          并开始计时, 连续 LF_LOST_MS 都看不到才算真丢线。 */
+    if (seen != 0U)
+    {
+        s_error   = raw_err;
+        s_lost_ms = 0U;
+    }
+    else if (s_lost_ms < 0xFFFFU)
+    {
+        s_lost_ms += LF_STEP_MS;
+    }
 
     /* ★ 第 2 步: 算差速和两个轮子的命令 —— 也是不管跑不跑都算, 屏幕要显示。
      *   error > 0 = 线在右边 -> 要往右转 -> 左轮加速、右轮减速 */
@@ -206,8 +224,9 @@ void line_follow_step(void)
         return;
     }
 
-    /* ★ 第 3 步: 丢线就停车 —— 不做原地转向找线, 先让它把直线走稳 */
-    if (s_on_line == 0U)
+    /* ★ 第 3 步: 连续丢够 LF_LOST_MS 才停车。
+     *   中间的几十毫秒里车还在按【最后一次看到的线】的方向走, 不会突然回正 */
+    if (s_lost_ms >= LF_LOST_MS)
     {
         line_follow_stop();
         s_lost = 1U;

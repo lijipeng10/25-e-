@@ -26,7 +26,9 @@ void line_follow_stop(void);
 /* 1 = 正在循迹 */
 uint8_t line_follow_is_running(void);
 
-/* 1 = 刚因为【丢线】停下来(屏幕显示 LOST); 重新按 KEY2 才继续 */
+/* 1 = 刚因为【丢线】停下来(屏幕显示 LOST); 重新按 KEY2 才继续。
+ * ★ 判丢线是【去抖】过的: 要连续 LF_LOST_MS(200ms) 都看不到线才算,
+ *   单次采样漏读(电机一转灰度会偶然整组漏一次)不会停车 */
 uint8_t line_follow_is_lost(void);
 
 /* 控制步进: 建议每 10ms 调用一次。★ 没在循迹时也会读灰度、算偏差和轮速命令,

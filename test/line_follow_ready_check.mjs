@@ -192,4 +192,52 @@ ok('|error| 最大值只增不减, 且不超过 100', () => {
     assert.equal(mx, E_MAX_LIMIT);
 });
 
+// ---- 7. 丢线去抖状态机, 与 line_follow_step() 等价 ----
+// 实测背景: 电机一转, 灰度会偶尔【整组漏读一次】(车压在线上却读到 00000000)。
+// 单次采样就判丢线 -> 刚起步就 LOST 停车。所以要连续 LF_LOST_MS 才判。
+// (STEP_MS 复用第 6 节那个 = 10)
+const LOST_MS = 200;
+
+function debounce(samples) {          // samples: 每一拍 {on: 是否看到线, e: 误差}
+    let err = 0, lost_ms = 0, stopAt = -1;
+    const errs = [];
+    for (let i = 0; i < samples.length; i++) {
+        if (stopAt >= 0) break;
+        const s = samples[i];
+        if (s.on) { err = s.e; lost_ms = 0; }
+        else if (lost_ms < 0xFFFF) { lost_ms += STEP_MS; }
+        if (lost_ms >= LOST_MS) { stopAt = i; break; }
+        errs.push(err);
+    }
+    return { err, stopAt, errs };
+}
+
+const onLine = (e) => ({ on: true, e: e });
+const blank = { on: false, e: 0 };
+
+ok('看到线时正常刷新误差', () => {
+    assert.equal(debounce([onLine(14), onLine(-28)]).err, -28);
+    assert.equal(debounce([onLine(14), onLine(-28)]).stopAt, -1);
+});
+
+ok('单次漏读不漏车: 不停车, 而且误差保持上一次的值(转向不跳)', () => {
+    const r = debounce([onLine(14), blank, onLine(14)]);
+    assert.equal(r.stopAt, -1, '一漏读就停车了');
+    assert.equal(r.errs[1], 14, '漏读那一拍误差被清成 0 了 -> 车会突然回正');
+});
+
+ok('连续漏读 190ms 又看到线 -> 不停车, 计时清零', () => {
+    const r = debounce([onLine(14), ...Array(19).fill(blank), onLine(14)]);
+    assert.equal(r.stopAt, -1);
+});
+
+ok('连续漏读 200ms -> 判丢线停车(正好第 20 拍)', () => {
+    const r = debounce([onLine(14), ...Array(25).fill(blank)]);
+    assert.equal(r.stopAt, 20);
+});
+
+ok('一开始就看不到线 -> 也是 200ms 后停, 不会 0ms 就停', () => {
+    assert.equal(debounce(Array(30).fill(blank)).stopAt, 19);
+});
+
 console.log('\n' + pass + ' passed');

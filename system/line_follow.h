@@ -3,10 +3,11 @@
 
 #include <stdint.h>
 
-/* line_follow.h —— 循迹(只用灰度 + 编码器速度环, 【不接陀螺仪】)。
+/* line_follow.h —— 循迹(灰度定位置 + 陀螺仪做阻尼 + 编码器速度环)。
  * 用法: 开机 line_follow_init() 一次; KEY2 开/关(line_follow_start/stop);
  *       主循环里每 10ms 调一次 line_follow_step()。
- * ★ 调参入口全在 line_follow.c 顶部的宏, 一共 5 个。 */
+ * ★ 陀螺仪只提供【阻尼项】(车头正在转就先拦一下), 不是航向环 —— 见 line_follow.c 顶部。
+ * ★ 调参入口全在 line_follow.c 顶部的宏。 */
 
 /* ★★ 左轮 / 右轮分别接在哪个电机通道(A路 = 1, B路 = 2)。实测确认, 勿凭猜改:
  *   物理【左】轮接在 B路(通道 2), 物理【右】轮接在 A路(通道 1)。

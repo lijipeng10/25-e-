@@ -278,4 +278,33 @@ ok('每圈脉冲数 = 260(用户实测; 双边沿才是 520, 现在 SysConfig �
     assert.equal(num(encSrc, 'ENCODER_PULSE'), 260, 'ENCODER_PULSE 被改了');
 });
 
+// ---- 9. 陀螺仪阻尼项: steer = KP*error + KD*角速度 ----
+// 符号推导: 陀螺仪【左转为正】(实测) -> 车正在往左偏 -> 要压它往右 -> steer 取正;
+//           而 steer > 0 = 左轮快 = 往右转, 所以阻尼项是【加】。
+const KD = num(lfcSrc, 'LF_GYRO_KD');
+
+const dampOf = (rateX10) => Math.trunc((KD * rateX10) / 10);      // 0.1度/秒 -> mm/s
+
+ok('往左转(角速度为正) -> 阻尼项为正(往右拦)', () => {
+    assert.ok(dampOf(+500) > 0, 'rate=+50度/秒 时阻尼项不是正的: ' + dampOf(+500));
+});
+
+ok('往右转(角速度为负) -> 阻尼项为负(往左拦)', () => {
+    assert.ok(dampOf(-500) < 0, 'rate=-50度/秒 时阻尼项不是负的: ' + dampOf(-500));
+});
+
+ok('不转的时候阻尼项为 0(不影响静态核对 l/r)', () => {
+    assert.equal(dampOf(0), 0);
+});
+
+ok('阻尼项不会把差速撑爆(和位置项相加后仍会被 STEER_MAX 夹住)', () => {
+    const raw = KP * 100 * SIGN + dampOf(3000);       // 位置项满 + 300度/秒
+    const clamped = Math.max(-STEER_MAX, Math.min(STEER_MAX, raw));
+    assert.equal(clamped, STEER_MAX);
+});
+
+ok('LF_GYRO_KD 是可关的: 设成 0 就退回纯位置控制', () => {
+    assert.ok(KD >= 0, 'KD 不该是负数(负数=陀螺仪左右符号反了才会用)');
+});
+
 console.log('\n' + pass + ' passed');

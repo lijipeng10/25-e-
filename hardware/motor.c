@@ -112,7 +112,7 @@ void motor_pid_update(uint8_t id)
 
     if (s_target[idx] == 0.0f) { return; }      /* 目标为 0 就不动它(set 里已经给过 0) */
 
-    now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s(来自 encoder.c) */
+    now = (float)motor_speed_get(id);           /* 实测 mm/s */
     out = pid_update(&s_pid[idx], s_target[idx] - now);
 
     motor_set_duty(id, (uint16_t)out);

@@ -1,5 +1,4 @@
 #include "sm_encoder.h"
-#include "encoder.h"        /* encoder_E1A_PIN / encoder_1_A 等 */
 #include "ti_msp_dl_config.h"
 #include "encoder.h"            /* ★ 轮速编码器的计数也走这个 GROUP1 向量 */
 
@@ -80,11 +79,9 @@ static void enc_step(uint8_t axis)
  *   现在真正在跑的是 empty.c 里那个: 它负责数轮速编码器的脉冲 + 清所有标志。
  *   ★ 云台以后要用的话, 把下面这段云台计数逻辑【合并进 empty.c 那个函数里】,
  *     不要再单独定义一个同名处理函数。 */
-void sm_encoder_group1_isr(void)
+void GROUP1_IRQHandler(void)
 {
     uint32_t sta_a, sta_b;
-    /* 下面用 encoder_E1A_PIN / encoder_E2A_PIN 和 encoder_1_A / encoder_2_A,
-       来自 encoder.h */
 
     s_isr_count++;
 
@@ -103,10 +100,8 @@ void sm_encoder_group1_isr(void)
     if ((sta_a & sm_motor_encoder_B1_PIN) != 0U) enc_step(0U);
     if ((sta_a & sm_motor_encoder_A2_PIN) != 0U) enc_step(1U);
 
-    /* --- ★ 轮速编码器: 只数 A 相(方向由命令决定, 不需要 B 相) ---
-     *   E1A 在 GPIOB(PB20), E2A 在 GPIOA(PA25), 和上面云台那些不是一回事 */
-    if ((sta_b & encoder_E1A_PIN) != 0U) { encoder_1_A++; }
-    if ((sta_a & encoder_E2A_PIN) != 0U) { encoder_2_A++; }
+    /* --- ★ 轮速编码器: 只数 A 相的边沿(方向由命令决定, 不用 B 相) --- */
+    motor_speed_isr(sta_a, sta_b);
 
     /* --- ★ 最后把读到的标志全部清掉, 一个都不留 --- */
     if (sta_a != 0U) { DL_GPIO_clearInterruptStatus(GPIOA, sta_a); }
@@ -116,10 +111,7 @@ void sm_encoder_group1_isr(void)
 /* ---------------------------------------------------------------------------
  * 初始化: 清状态, 使能 NVIC(注意 GPIOA/GPIOB 中断都走 GROUP1)
  * -------------------------------------------------------------------------*/
-/* ★★ 注意函数名: 不能叫 encoder_init() ★★
- *   hardware/encoder.c(轮速编码器)里已经有一个 encoder_init() 了,
- *   同名会【链接失败】。这个模块是云台编码器, 所以叫 sm_encoder_init()。 */
-void sm_encoder_init(void)
+void encoder_init(void)
 {
     s_enc[0].count = 0; s_enc[0].prev = 0; s_enc[0].zero_seen = 0;
     s_enc[0].last_sample = 0; s_enc[0].rpm = 0;

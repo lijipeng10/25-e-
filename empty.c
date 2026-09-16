@@ -90,6 +90,13 @@ static void show_sensors(void)
     OLED_ShowString(0, 0, (u8 *)"FOLLOW", 16);
     OLED_ShowNum(96, 0, speed_table[speed_index], 4, 16);
 
+    /* 标题和档位中间的 x=48~95 是 16px 的 6 个字符位: 陀螺仪没接时在这里报 MPU:NO */
+    /* 接上了就整段不画, 位置留空 —— 免得 Y 一直显示 +000 让人以为是"航向不动" */
+    if (s_mpu == 0U)
+    {
+        OLED_ShowString(48, 0, (u8 *)"MPU:NO", 16);
+    }
+
     /* 第 2 行 12px: 8 路灰度位图, 读到 = 1, 没读到 = 0 */
     for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++)
     {
@@ -111,11 +118,12 @@ static void show_sensors(void)
     OLED_ShowString(0, 28, (u8 *)"E", 12);
     show_signed3(12, 28, (int32_t)line_follow_get_error());
 
-    /* 第 4 行 12px: 外环给的目标航向 psi_ref(单位 0.1 度), 符号 + 3 位占 x=12~35 */
+    /* 第 4 行 12px: 外环给的目标航向 psi_ref, 换算成度(psi_ref 原始单位是 0.1 度, 除以 10) */
+    /* ★ 单位必须和第 5 行的 Y 一致(都是度), 不然 P 和 Y 摆在一起没法直接比 */
     OLED_ShowString(0, 40, (u8 *)"P", 12);
-    show_signed3(12, 40, (int32_t)line_follow_get_psi_ref());
+    show_signed3(12, 40, (int32_t)(line_follow_get_psi_ref() / 10));
 
-    /* 第 5 行 12px: 陀螺仪实测航向(度 = yaw_x10 / 10), 符号 + 3 位占 x=12~35 */
+    /* 第 5 行 12px: 陀螺仪实测航向, 单位也是度(= yaw_x10 / 10), 可直接和上一行的 P 对着看 */
     OLED_ShowString(0, 52, (u8 *)"Y", 12);
     show_signed3(12, 52, (int32_t)(mpu6050_get_yaw_x10() / 10));
 

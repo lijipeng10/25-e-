@@ -59,15 +59,34 @@ u8 OLED_GRAM[144][8];
 #define OLED_BLK_OFF()    DL_GPIO_clearPins(oled_PORT, oled_BLK_PIN)
 
 /* 小写包装, 让 OLED_Refresh 里能像函数一样调用(便于整页连续发送) */
-static void oled_cs_low (void) { OLED_CS_LOW();  }
-static void oled_cs_high(void) { OLED_CS_HIGH(); }
-static void oled_dc_cmd (void) { OLED_DC_CMD();  }
-static void oled_dc_data(void) { OLED_DC_DATA(); }
+static void oled_cs_low (void)
+{
+    OLED_CS_LOW();
+}
+
+static void oled_cs_high(void)
+{
+    OLED_CS_HIGH();
+}
+
+static void oled_dc_cmd (void)
+{
+    OLED_DC_CMD();
+}
+
+static void oled_dc_data(void)
+{
+    OLED_DC_DATA();
+}
 
 /* 发一个字节: 只在 TX FIFO 满时等待(防止写溢出丢字节), 其余交给 FIFO 排队 */
 static void oled_spi_write(u8 dat)
 {
-    while (DL_SPI_isTXFIFOFull(OLED_INST)) { }
+    while (DL_SPI_isTXFIFOFull(OLED_INST))
+    {
+        /* 空转 */
+    }
+
     DL_SPI_transmitData8(OLED_INST, dat);
 }
 
@@ -76,16 +95,35 @@ static void oled_spi_write(u8 dat)
  * 直接等 !isBusy 会立刻通过, 造成"以为发完了其实没发"的竞态。 */
 static void oled_spi_flush(void)
 {
-    while (!DL_SPI_isTXFIFOEmpty(OLED_INST)) { }   /* 1. 等 FIFO 排空 */
-    while (DL_SPI_isBusy(OLED_INST)) { }           /* 2. 等最后一位移出 */
-    while (!DL_SPI_isRXFIFOEmpty(OLED_INST)) { (void)DL_SPI_receiveData8(OLED_INST); }
+    /* 1. 等 FIFO 排空 */
+    while (!DL_SPI_isTXFIFOEmpty(OLED_INST))
+    {
+        /* 空转 */
+    }
+
+    /* 2. 等最后一位移出 */
+    while (DL_SPI_isBusy(OLED_INST))
+    {
+        /* 空转 */
+    }
+
+    while (!DL_SPI_isRXFIFOEmpty(OLED_INST))
+    {
+        (void)DL_SPI_receiveData8(OLED_INST);
+    }
 }
 
 /* 写命令/数据: I2C 版靠控制字节 0x00/0x40, SPI 版靠 DC 脚 */
 void OLED_WR_Byte(u8 dat, u8 mode)
 {
-    if (mode == OLED_DATA) { OLED_DC_DATA(); }
-    else                   { OLED_DC_CMD();  }
+    if (mode == OLED_DATA)
+    {
+        OLED_DC_DATA();
+    }
+    else
+    {
+        OLED_DC_CMD();
+    }
 
     OLED_CS_LOW();
     oled_spi_write(dat);
@@ -98,15 +136,25 @@ void OLED_WR_Byte(u8 dat, u8 mode)
  * ==========================================================================*/
 void OLED_ColorTurn(u8 i)
 {
-    if(i==0) OLED_WR_Byte(0xA6,OLED_CMD);   //正常显示
-    if(i==1) OLED_WR_Byte(0xA7,OLED_CMD);   //反色显示
+    if(i==0)
+        OLED_WR_Byte(0xA6,OLED_CMD);   //正常显示
+    if(i==1)
+        OLED_WR_Byte(0xA7,OLED_CMD);   //反色显示
 }
 
 void OLED_DisplayTurn(u8 i)
 {
-    if(i==0) { OLED_WR_Byte(OLED_COM_SCAN,OLED_CMD);  OLED_WR_Byte(OLED_SEG_REMAP,OLED_CMD); }
-    if(i==1) { OLED_WR_Byte((OLED_COM_SCAN==0xC8)?0xC0:0xC8,OLED_CMD);
-               OLED_WR_Byte((OLED_SEG_REMAP==0xA1)?0xA0:0xA1,OLED_CMD); }
+    if(i==0)
+    {
+        OLED_WR_Byte(OLED_COM_SCAN,OLED_CMD);
+        OLED_WR_Byte(OLED_SEG_REMAP,OLED_CMD);
+    }
+
+    if(i==1)
+    {
+        OLED_WR_Byte((OLED_COM_SCAN==0xC8)?0xC0:0xC8,OLED_CMD);
+        OLED_WR_Byte((OLED_SEG_REMAP==0xA1)?0xA0:0xA1,OLED_CMD);
+    }
 }
 
 void OLED_DisPlay_On(void)
@@ -128,13 +176,17 @@ void OLED_DisPlay_Off(void)
  *   这里写成 1<<(7-...) 的话, 每个 8 像素高的横条会被上下翻转 -> 全屏乱码! */
 void OLED_ClearPoint(u8 x,u8 y)
 {
-    if(x>127||y>63) return;
+    if(x>127||y>63)
+        return;
+
     OLED_GRAM[x][y/8] &= (u8)~(1U << (y%8));
 }
 
 void OLED_DrawPoint(u8 x,u8 y)
 {
-    if(x>127||y>63) return;
+    if(x>127||y>63)
+        return;
+
     OLED_GRAM[x][y/8] |= (u8)(1U << (y%8));
 }
 
@@ -142,18 +194,20 @@ void OLED_DrawPoint(u8 x,u8 y)
 void OLED_Refresh(void)
 {
     u8 i,n;
+
     for(i=0;i<8;i++)
     {
         /* 一整页(3 个命令 + 128 字节数据)只用一次 CS 框住, 比逐字节翻转 CS 可靠 */
         oled_dc_cmd();
         oled_cs_low();
 
-        oled_spi_write((u8)(0xB0+i));                                        //页地址
-        oled_spi_write((u8)(0x00 | (g_oled_col_offset & 0x0FU)));            //低列地址(含偏移)
-        oled_spi_write((u8)(0x10 | ((g_oled_col_offset >> 4) & 0x0FU)));     //高列地址
+        oled_spi_write((u8)(0xB0+i));                                    //页地址
+        oled_spi_write((u8)(0x00 | (g_oled_col_offset & 0x0FU)));        //低列地址(含偏移)
+        oled_spi_write((u8)(0x10 | ((g_oled_col_offset >> 4) & 0x0FU))); //高列地址
 
         oled_spi_flush();       /* ★ 等这 3 个命令真发完, 才能切 DC 到数据模式 */
         oled_dc_data();
+
         for(n=0;n<128;n++)
             oled_spi_write(OLED_GRAM[n][i]);
 
@@ -165,9 +219,11 @@ void OLED_Refresh(void)
 void OLED_Clear(void)
 {
     u8 i,n;
+
     for(i=0;i<8;i++)
         for(n=0;n<128;n++)
             OLED_GRAM[n][i]=0x00;
+
     OLED_Refresh();
 }
 
@@ -176,40 +232,84 @@ void OLED_DrawLine(u8 x1,u8 y1,u8 x2,u8 y2)
     u8 t;
     int xerr=0,yerr=0,delta_x,delta_y,distance;
     int incx,incy,uRow,uCol;
+
     delta_x=x2-x1;
     delta_y=y2-y1;
     uRow=x1;
     uCol=y1;
-    if(delta_x>0)incx=1;
-    else if(delta_x==0)incx=0;
-    else {incx=-1;delta_x=-delta_x;}
-    if(delta_y>0)incy=1;
-    else if(delta_y==0)incy=0;
-    else {incy=-1;delta_y=-delta_y;}
-    if(delta_x>delta_y)distance=delta_x;
-    else distance=delta_y;
+
+    if(delta_x>0)
+        incx=1;
+    else if(delta_x==0)
+        incx=0;
+    else
+    {
+        incx=-1;
+        delta_x=-delta_x;
+    }
+
+    if(delta_y>0)
+        incy=1;
+    else if(delta_y==0)
+        incy=0;
+    else
+    {
+        incy=-1;
+        delta_y=-delta_y;
+    }
+
+    if(delta_x>delta_y)
+        distance=delta_x;
+    else
+        distance=delta_y;
+
     for(t=0;t<=distance+1;t++)
     {
         OLED_DrawPoint(uRow,uCol);
         xerr+=delta_x;
         yerr+=delta_y;
-        if(xerr>distance) { xerr-=distance; uRow+=incx; }
-        if(yerr>distance) { yerr-=distance; uCol+=incy; }
+
+        if(xerr>distance)
+        {
+            xerr-=distance;
+            uRow+=incx;
+        }
+
+        if(yerr>distance)
+        {
+            yerr-=distance;
+            uCol+=incy;
+        }
     }
 }
 
 void OLED_DrawCircle(u8 x,u8 y,u8 r)
 {
     int a=0,b=r,d;
+
     d = 1 - (int)r;
+
     while(a <= b)
     {
-        OLED_DrawPoint(x+a,y+b); OLED_DrawPoint(x-a,y+b);
-        OLED_DrawPoint(x+a,y-b); OLED_DrawPoint(x-a,y-b);
-        OLED_DrawPoint(x+b,y+a); OLED_DrawPoint(x-b,y+a);
-        OLED_DrawPoint(x+b,y-a); OLED_DrawPoint(x-b,y-a);
-        if(d<0) { d += 2*a+3; }
-        else    { d += 2*(a-b)+5; b--; }
+        OLED_DrawPoint(x+a,y+b);
+        OLED_DrawPoint(x-a,y+b);
+        OLED_DrawPoint(x+a,y-b);
+        OLED_DrawPoint(x-a,y-b);
+        OLED_DrawPoint(x+b,y+a);
+        OLED_DrawPoint(x-b,y+a);
+        OLED_DrawPoint(x+b,y-a);
+        OLED_DrawPoint(x-b,y-a);
+
+        if(d<0)
+        {
+            d += 2*a+3;
+        }
+        else
+        {
+            d += 2*(a-b)+5;
+            b--;
+        }
+
         a++;
     }
 }
@@ -218,21 +318,37 @@ void OLED_ShowChar(u8 x,u8 y,u8 chr,u8 size1)
 {
     u8 i,m,temp,size2,chr1;
     u8 y0=y;
+
     size2=(size1/8+((size1%8)?1:0))*(size1/2);
     chr1=chr-' ';
+
     for(i=0;i<size2;i++)
     {
-        if(size1==12)      temp=asc2_1206[chr1][i];
-        else if(size1==16) temp=asc2_1608[chr1][i];
-        else if(size1==24) temp=asc2_2412[chr1][i];
-        else return;
+        if(size1==12)
+            temp=asc2_1206[chr1][i];
+        else if(size1==16)
+            temp=asc2_1608[chr1][i];
+        else if(size1==24)
+            temp=asc2_2412[chr1][i];
+        else
+            return;
+
         for(m=0;m<8;m++)
         {
-            if(temp&0x80) OLED_DrawPoint(x,y);
-            else          OLED_ClearPoint(x,y);
+            if(temp&0x80)
+                OLED_DrawPoint(x,y);
+            else
+                OLED_ClearPoint(x,y);
+
             temp<<=1;
             y++;
-            if((y-y0)==size1) { y=y0; x++; break; }
+
+            if((y-y0)==size1)
+            {
+                y=y0;
+                x++;
+                break;
+            }
         }
     }
 }
@@ -243,7 +359,13 @@ void OLED_ShowString(u8 x,u8 y,u8 *chr,u8 size1)
     {
         OLED_ShowChar(x,y,*chr,size1);
         x+=size1/2;
-        if(x>128-size1/2) { x=0; y+=size1; }
+
+        if(x>128-size1/2)
+        {
+            x=0;
+            y+=size1;
+        }
+
         chr++;
     }
 }
@@ -251,7 +373,10 @@ void OLED_ShowString(u8 x,u8 y,u8 *chr,u8 size1)
 static u32 oled_pow(u8 m,u8 n)
 {
     u32 result=1;
-    while(n--) result*=m;
+
+    while(n--)
+        result*=m;
+
     return result;
 }
 
@@ -259,14 +384,22 @@ void OLED_ShowNum(u8 x,u8 y,u32 num,u8 len,u8 size1)
 {
     u8 t,temp;
     u8 enshow=0;
+
     for(t=0;t<len;t++)
     {
         temp=(num/oled_pow(10,len-t-1))%10;
+
         if(enshow==0&&t<(len-1))
         {
-            if(temp==0) { OLED_ShowChar(x+(size1/2)*t,y,' ',size1); continue; }
-            else enshow=1;
+            if(temp==0)
+            {
+                OLED_ShowChar(x+(size1/2)*t,y,' ',size1);
+                continue;
+            }
+            else
+                enshow=1;
         }
+
         OLED_ShowChar(x+(size1/2)*t,y,temp+'0',size1);
     }
 }
@@ -276,24 +409,41 @@ void OLED_ShowChinese(u8 x,u8 y,u8 num,u8 size1)
     u8 i,m,n=0,temp,chr1;
     u8 y0=y;
     u8 size3=size1/8;
+
     while(size3--)
     {
         chr1=num*size1/8+n;
         n++;
+
         for(i=0;i<size1;i++)
         {
-            if(size1==16)      temp=Hzk1[chr1][i];
-            else if(size1==24) temp=Hzk2[chr1][i];
-            else if(size1==32) temp=Hzk3[chr1][i];
-            else if(size1==64) temp=Hzk4[chr1][i];
-            else return;
+            if(size1==16)
+                temp=Hzk1[chr1][i];
+            else if(size1==24)
+                temp=Hzk2[chr1][i];
+            else if(size1==32)
+                temp=Hzk3[chr1][i];
+            else if(size1==64)
+                temp=Hzk4[chr1][i];
+            else
+                return;
+
             for(m=0;m<8;m++)
             {
-                if(temp&0x80) OLED_DrawPoint(x,y);
-                else          OLED_ClearPoint(x,y);
+                if(temp&0x80)
+                    OLED_DrawPoint(x,y);
+                else
+                    OLED_ClearPoint(x,y);
+
                 temp<<=1;
                 y++;
-                if((y-y0)==size1) { y=y0; x++; break; }
+
+                if((y-y0)==size1)
+                {
+                    y=y0;
+                    x++;
+                    break;
+                }
             }
         }
     }
@@ -303,6 +453,7 @@ void OLED_ShowChinese(u8 x,u8 y,u8 num,u8 size1)
 void OLED_WR_BP(u8 x,u8 y)
 {
     u8 col = (u8)(x + g_oled_col_offset);   /* SH1106 必须加偏移 */
+
     OLED_WR_Byte(0xb0+y,OLED_CMD);
     OLED_WR_Byte((u8)(0x10|((col>>4)&0x0f)),OLED_CMD);
     OLED_WR_Byte((u8)(col&0x0f),OLED_CMD);
@@ -312,11 +463,16 @@ void OLED_ShowPicture(u8 x0,u8 y0,u8 x1,u8 y1,u8 BMP[])
 {
     u32 j=0;
     u8 x=0,y=0;
-    if(y%8==0)y=0;
-    else y+=1;
+
+    if(y%8==0)
+        y=0;
+    else
+        y+=1;
+
     for(y=y0;y<y1;y++)
     {
         OLED_WR_BP(x0,y);
+
         for(x=x0;x<x1;x++)
         {
             OLED_WR_Byte(BMP[j],OLED_DATA);
@@ -326,8 +482,15 @@ void OLED_ShowPicture(u8 x0,u8 y0,u8 x1,u8 y1,u8 BMP[])
 }
 
 /* 背光控制(BLK 脚, 高电平点亮; 若你的模块是低电平点亮, 把 ON/OFF 里的宏对调) */
-void OLED_BacklightOn(void)  { OLED_BLK_ON();  }
-void OLED_BacklightOff(void) { OLED_BLK_OFF(); }
+void OLED_BacklightOn(void)
+{
+    OLED_BLK_ON();
+}
+
+void OLED_BacklightOff(void)
+{
+    OLED_BLK_OFF();
+}
 
 /* ============================================================================
  *  初始化: 硬件复位 + SSD1306 命令序列
@@ -346,34 +509,34 @@ void OLED_Init(void)
     delay_ms(200);
     OLED_RES_HIGH();
 
-    OLED_WR_Byte(0xAE,OLED_CMD);    //关显示
-    OLED_WR_Byte((u8)(0x00|(g_oled_col_offset&0x0f)),OLED_CMD);   //低列地址(含偏移)
-    OLED_WR_Byte((u8)(0x10|((g_oled_col_offset>>4)&0x0f)),OLED_CMD);//高列地址
-    OLED_WR_Byte(0x40,OLED_CMD);    //起始行
-    OLED_WR_Byte(0x81,OLED_CMD);    //对比度
+    OLED_WR_Byte(0xAE,OLED_CMD);                                     //关显示
+    OLED_WR_Byte((u8)(0x00|(g_oled_col_offset&0x0f)),OLED_CMD);      //低列地址(含偏移)
+    OLED_WR_Byte((u8)(0x10|((g_oled_col_offset>>4)&0x0f)),OLED_CMD); //高列地址
+    OLED_WR_Byte(0x40,OLED_CMD);                                     //起始行
+    OLED_WR_Byte(0x81,OLED_CMD);                                     //对比度
     OLED_WR_Byte(0xCF,OLED_CMD);
-    OLED_WR_Byte(OLED_SEG_REMAP,OLED_CMD);   //左右方向(0xA0/0xA1)
-    OLED_WR_Byte(OLED_COM_SCAN,OLED_CMD);    //上下方向(0xC0/0xC8)
-    OLED_WR_Byte(0xA6,OLED_CMD);    //正常显示
-    OLED_WR_Byte(0xA8,OLED_CMD);    //多路复用比
-    OLED_WR_Byte(0x3f,OLED_CMD);    //1/64 duty
-    OLED_WR_Byte(0xD3,OLED_CMD);    //显示偏移
+    OLED_WR_Byte(OLED_SEG_REMAP,OLED_CMD);                           //左右方向(0xA0/0xA1)
+    OLED_WR_Byte(OLED_COM_SCAN,OLED_CMD);                            //上下方向(0xC0/0xC8)
+    OLED_WR_Byte(0xA6,OLED_CMD);                                     //正常显示
+    OLED_WR_Byte(0xA8,OLED_CMD);                                     //多路复用比
+    OLED_WR_Byte(0x3f,OLED_CMD);                                     //1/64 duty
+    OLED_WR_Byte(0xD3,OLED_CMD);                                     //显示偏移
     OLED_WR_Byte(0x00,OLED_CMD);
-    OLED_WR_Byte(0xd5,OLED_CMD);    //时钟分频
+    OLED_WR_Byte(0xd5,OLED_CMD);                                     //时钟分频
     OLED_WR_Byte(0x80,OLED_CMD);
-    OLED_WR_Byte(0xD9,OLED_CMD);    //预充电周期
+    OLED_WR_Byte(0xD9,OLED_CMD);                                     //预充电周期
     OLED_WR_Byte(0xF1,OLED_CMD);
-    OLED_WR_Byte(0xDA,OLED_CMD);    //COM 引脚配置
+    OLED_WR_Byte(0xDA,OLED_CMD);                                     //COM 引脚配置
     OLED_WR_Byte(0x12,OLED_CMD);
-    OLED_WR_Byte(0xDB,OLED_CMD);    //VCOMH
+    OLED_WR_Byte(0xDB,OLED_CMD);                                     //VCOMH
     OLED_WR_Byte(0x40,OLED_CMD);
-    OLED_WR_Byte(0x20,OLED_CMD);    //寻址模式: 页寻址(商家例程同款)
+    OLED_WR_Byte(0x20,OLED_CMD);                                     //寻址模式: 页寻址(商家例程同款)
     OLED_WR_Byte(0x02,OLED_CMD);
-    OLED_WR_Byte(0x8D,OLED_CMD);    //电荷泵使能(商家例程同款)
+    OLED_WR_Byte(0x8D,OLED_CMD);                                     //电荷泵使能(商家例程同款)
     OLED_WR_Byte(0x14,OLED_CMD);
-    OLED_WR_Byte(0xA4,OLED_CMD);    //全局显示跟随显存
-    OLED_WR_Byte(0xA6,OLED_CMD);    //非反色
-    OLED_WR_Byte(0xAF,OLED_CMD);    //开显示
+    OLED_WR_Byte(0xA4,OLED_CMD);                                     //全局显示跟随显存
+    OLED_WR_Byte(0xA6,OLED_CMD);                                     //非反色
+    OLED_WR_Byte(0xAF,OLED_CMD);                                     //开显示
 
     OLED_Clear();
 }

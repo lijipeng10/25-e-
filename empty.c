@@ -23,6 +23,14 @@
 /* MPU6050 的 I2C 地址: 0 = 没找到, 0x68 / 0x69 = 找到了(现在只用来提示) */
 static uint8_t s_mpu = 0U;
 
+/* 按【电机通道号】取实测速度: 1 = A路 -> speed_1, 2 = B路 -> speed_2。
+ * ★ 通道号和"左/右轮"的对应关系在 line_follow.h 的 LF_LEFT_ID / LF_RIGHT_ID,
+ *   这里【不要】直接写 speed_1 / speed_2, 否则屏幕上 L/R 会和真实轮子对不上。 */
+static int32_t speed_of(uint8_t id)
+{
+    return (int32_t)((id == 1U) ? speed_1 : speed_2);
+}
+
 /* 显示带符号整数: 1 位符号 + digits 位数字, 12px 字体每位 6 像素 */
 static void show_signed(u8 x, u8 y, int32_t v, u8 digits)
 {
@@ -74,9 +82,9 @@ static void show_status(void)
     /* 第 3 行: 大写 L / R = 两个轮子的【实测】速度 mm/s(编码器测的)。
      * ★ 手转一个轮子, 只有对应的那个数会动 */
     OLED_ShowString(0, 24, (u8 *)"L", 12);
-    show_signed(6, 24, (int32_t)speed_1, 4);
+    show_signed(6, 24, speed_of(LF_LEFT_ID), 4);
     OLED_ShowString(40, 24, (u8 *)"R", 12);
-    show_signed(46, 24, (int32_t)speed_2, 4);
+    show_signed(46, 24, speed_of(LF_RIGHT_ID), 4);
 
     /* 第 4 行: 8 路灰度位图, bit0(最左) 在最左边, 1 = 压线 */
     for (i = 0U; i < GRAYSCALE_SENSOR_CHANNELS; i++)

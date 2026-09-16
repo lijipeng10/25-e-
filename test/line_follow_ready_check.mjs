@@ -143,4 +143,25 @@ ok('两个电机 direction=1 都是 拉高 IN1 + 拉低 IN2 (实测极性, 勿�
     assert.equal(forwardPins(2), 'set1,clear2', 'B路(右轮)极性被改了');
 });
 
+// ---- 5. 左/右轮通道映射: 实测确认过, 写错就是「线在左边车往右拐」一起步就丢线 ----
+const lfhSrc = readFileSync(join(root, 'system/line_follow.h'), 'utf8');
+const emptySrc = readFileSync(join(root, 'empty.c'), 'utf8');
+
+const macro = (name) => {
+    const m = lfhSrc.match(new RegExp('#define\\s+' + name + '\\s+(\\d+)U'));
+    return m ? Number(m[1]) : null;
+};
+
+ok('物理左轮 = B路(2), 物理右轮 = A路(1) (实测映射, 勿改)', () => {
+    assert.equal(macro('LF_LEFT_ID'), 2, '左轮通道号被改了');
+    assert.equal(macro('LF_RIGHT_ID'), 1, '右轮通道号被改了');
+});
+
+ok('empty.c 的 L/R 实测速度按通道号取, 没有硬写 speed_1/speed_2', () => {
+    assert.match(emptySrc, /show_signed\(6, 24, speed_of\(LF_LEFT_ID\)/,
+        'L 那一行没走 speed_of(LF_LEFT_ID)');
+    assert.match(emptySrc, /show_signed\(46, 24, speed_of\(LF_RIGHT_ID\)/,
+        'R 那一行没走 speed_of(LF_RIGHT_ID)');
+});
+
 console.log('\n' + pass + ' passed');

@@ -31,8 +31,8 @@
 /* 单轮命令上限: 基础 + 满差速, 快轮最多这么快 */
 #define LF_CMD_MAX      (LF_BASE_SPEED + LF_STEER_MAX)
 
-#define LF_LEFT_ID      1U      /* 左轮 = A路 */
-#define LF_RIGHT_ID     2U      /* 右轮 = B路 */
+/* ★ LF_LEFT_ID / LF_RIGHT_ID(哪个通道是物理左轮)定义在 line_follow.h 里 ——
+ *   屏幕也要用它对上真实轮子, 只能有一份。 */
 
 /* 8 路灰度的权重: 最左 -7 ... 最右 +7, 用来算线压在传感器哪一边 */
 static const int8_t LF_WEIGHT[GRAYSCALE_SENSOR_CHANNELS] =

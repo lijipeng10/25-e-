@@ -4,8 +4,9 @@
  *  控制律就两条, 整个文件一眼能看完:
  *
  *    1) 8 路灰度算重心偏差  error: -100(线在最左) ~ 0(正中) ~ +100(线在最右)
- *    2) 差速 = 位置项 + 阻尼项:
+ *    2) 差速 = 位置项 + 积分项 + 阻尼项:
  *         steer = LF_STEER_KP * error * LF_STEER_SIGN      <- 位置: 线偏了才修
+ *               + 积分项(LF_STEER_KI)                     <- 消稳态偏差: 偏着走也能慢慢拉正
  *               + LF_GYRO_KD  * 角速度                     <- 阻尼: 车头正在转就先拦
  *         左轮命令 = 基础速度 + steer,  右轮命令 = 基础速度 - steer,
  *         两个轮子真正转多快, 由 motor.c 的速度环(编码器 PID)去追。
@@ -52,6 +53,18 @@
 #define LF_STEER_MAX    300     /* 差速上限 mm/s; 慢轮最多降到 0(再大也没用, 会被夹住) */
 #define LF_SLOW_KP      2       /* ★ 转弯减速: |error| 每 1 格, 基础速度降多少 mm/s。
                                  *   基础速度翻倍了, 这里也翻倍, 保持原来的刹车力度 */
+/* ★★ 积分项 —— 消掉"车走直了、线却总停在阵列偏一边"的稳态偏差。
+ *   纯比例控制【必然】有稳态偏差: 要维持一个恒定的转向量(抵消车的跑偏倾向、
+ *   或者跟住一个弯), 就必须有一个恒定的误差(error = 需要的转向量 / KP)。
+ *   ★ 实测: KP 从 3 降到 2 之后, 车稳定地偏在一边 —— 因为同一个转向量需要的误差大了 1.5 倍。
+ *   积分把误差累起来慢慢加大转向, 直到偏差被消掉, 稳态误差归零。
+ *   ★ 设 0 = 关掉(退回纯比例, 立刻恢复原来的稳定状态)。
+ *   ★ 单位: 每 10ms 累加一次 error; 累满 100 个误差单位 -> 给 KI 那么大的转向量(mm/s) */
+#define LF_STEER_KI     3       /* 积分增益; 太大会开始左右摆, 先动这个数 */
+#define LF_STEER_I_ACC  6000    /* 积分累加器限幅 -> 最多贡献 6000*3/100 = 180mm/s 转向。
+                                 *   ★ 必须大于"抵消稳态偏差所需的转向量", 否则偏差只能补掉一部分。
+                                 *     实测: 偏差 E=71、KP=2 -> 需要 142mm/s, 所以限幅要给到 180 */
+
 #define LF_GYRO_KD      4       /* ★★ 陀螺仪阻尼: 单位 mm/s 每 (度/秒)。0 = 关掉,
                                  *    摆得更凶就改成负数(说明陀螺仪左右符号反了)。
                                  *    ★ 阻尼越大, 系统振荡的自然频率越低、越稳
@@ -81,6 +94,7 @@ static uint8_t  s_bits;         /* 最近一次灰度位图, bit0 = 最左 */
 static int16_t  s_error;        /* 控制用的偏差 -100 ~ +100(看不到线时保持上一次的值) */
 static uint16_t s_lost_ms;      /* 已经连续多少毫秒没看到线 */
 static int16_t  s_steer;        /* 最近一次差速量 mm/s */
+static int32_t  s_steer_i;      /* 积分累加器(误差的累积, 见 LF_STEER_KI) */
 static int16_t  s_cmd_left;     /* 左轮命令速度 mm/s */
 static int16_t  s_cmd_right;    /* 右轮命令速度 mm/s */
 static int16_t  s_e_min;        /* 本次运行期间 error 的最小/最大值 */
@@ -172,6 +186,7 @@ void line_follow_init(void)
     s_error     = 0;
     s_lost_ms   = 0U;
     s_steer     = 0;
+    s_steer_i   = 0;
     s_cmd_left  = 0;
     s_cmd_right = 0;
     s_e_min     = 0;
@@ -185,6 +200,7 @@ void line_follow_start(void)
     s_running = 1U;
     s_lost    = 0U;
     s_lost_ms = 0U;
+    s_steer_i = 0;              /* ★ 起步必须清零: 不然上一趟积的量会让车一开就猛拐 */
     s_e_min     = 0;            /* 这几项清零, 只记这一次运行 */
     s_e_max     = 0;
     s_run_ms    = 0U;
@@ -258,7 +274,19 @@ void line_follow_step(void)
         damp = 0;
     }
 
-    steer = (int32_t)LF_STEER_KP * (int32_t)s_error * LF_STEER_SIGN + damp;
+    /* ★ 积分项: 只在【跑起来】的时候累加 —— 停着也累的话, 屏幕上的 l/r 会自己往上飘,
+     *   静态核对转向方向就不好使了。累加器必须限幅: 起步/丢线/被挡住的时候误差会长时间
+     *   不为 0, 不夹住的话积分会堆满, 一松手车就猛拐出去。 */
+    if (s_running != 0U)
+    {
+        s_steer_i += (int32_t)s_error;
+
+        if (s_steer_i >  (int32_t)LF_STEER_I_ACC) { s_steer_i =  (int32_t)LF_STEER_I_ACC; }
+        if (s_steer_i < -(int32_t)LF_STEER_I_ACC) { s_steer_i = -(int32_t)LF_STEER_I_ACC; }
+    }
+
+    steer = (int32_t)LF_STEER_KP * (int32_t)s_error * LF_STEER_SIGN + damp
+          + (s_steer_i * (int32_t)LF_STEER_KI) / 100;
 
     if (steer > (int32_t)LF_STEER_MAX)
     {

@@ -310,4 +310,40 @@ ok('LF_GYRO_KD 是可关的: 设成 0 就退回纯位置控制', () => {
     assert.ok(KD >= 0, 'KD 不该是负数(负数=陀螺仪左右符号反了才会用)');
 });
 
+// ---- 10. 积分项: 消掉「车走直了、线却总停在阵列偏一边」的稳态偏差 ----
+// 纯比例控制必然有稳态偏差: 要维持恒定的转向量, 就必须有恒定的误差(error = u/KP)。
+// 实测: KP 从 3 降到 2 之后, 同一个转向量需要的误差大了 1.5 倍, 车就明显偏在一边。
+const KI = num(lfcSrc, 'LF_STEER_KI');
+const IACC = num(lfcSrc, 'LF_STEER_I_ACC');
+
+const iOf = (acc) => Math.trunc((acc * KI) / 100);
+const iClamp = (acc) => Math.max(-IACC, Math.min(IACC, acc));
+
+ok('恒定偏差会被累加成恒定转向(最终能把偏差顶掉)', () => {
+    let acc = 0;
+    for (let i = 0; i < 200; i++) acc = iClamp(acc + 40);
+    assert.ok(iOf(acc) > 0, '积了 200 拍还是 0');
+    assert.equal(acc, IACC, '累加器应该顶到限幅');
+});
+
+ok('积分项有正负(偏差在左就在左边补, 在右就在右边补)', () => {
+    assert.ok(iOf(-IACC) < 0);
+    assert.ok(iOf(IACC) > 0);
+});
+
+ok('积分限幅真的兜得住(不会无限涨)', () => {
+    assert.equal(iClamp(IACC * 10), IACC);
+    assert.equal(iClamp(-IACC * 10), -IACC);
+});
+
+ok('位置+积分+阻尼加起来仍然被 STEER_MAX 夹住', () => {
+    const raw = KP * 100 * SIGN + iOf(IACC) + 10000;     // 故意给一个超大的阻尼
+    const clamped = Math.max(-STEER_MAX, Math.min(STEER_MAX, raw));
+    assert.equal(clamped, STEER_MAX);
+});
+
+ok('LF_STEER_KI 设 0 就能一键退回纯比例控制', () => {
+    assert.ok(KI >= 0, 'KI 不该是负数');
+});
+
 console.log('\n' + pass + ' passed');

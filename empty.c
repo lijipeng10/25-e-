@@ -23,6 +23,20 @@
 /* MPU6050 的 I2C 地址: 0 = 没找到, 0x68 / 0x69 = 找到了(现在只用来提示) */
 static uint8_t s_mpu = 0U;
 
+/* ============================================================================
+ *  崩溃取证 —— 用来把"跑着跑着就退出程序了"分成三种情况, 不靠猜:
+ *    A. 屏幕上【又出现 BOOT 倒计时】      -> MCU 复位了(不是卡死)
+ *    B. 屏幕【定格】, 右下角心跳数字不动, 也没有 FAULT -> CPU 卡在某个死等里
+ *    C. 屏幕显示【!! FAULT !!】            -> CPU 跑飞了(HardFault / NMI)
+ *    D. 心跳数字还在跳、车不动             -> 程序活着, 是逻辑问题(比如 LOST)
+ * ==========================================================================*/
+
+/* 1 = OLED 已经初始化好, 故障处理函数才能安全地往上写 */
+static volatile uint8_t s_oled_ready = 0U;
+
+/* 主循环心跳: 屏幕每刷一次 +1, 显示在状态行右边 4 位。数字还在跳 = CPU 活着 */
+static volatile uint16_t s_loop_cnt = 0U;
+
 /* 按【电机通道号】取实测速度: 1 = A路 -> speed_1, 2 = B路 -> speed_2。
  * ★ 通道号和"左/右轮"的对应关系在 line_follow.h 的 LF_LEFT_ID / LF_RIGHT_ID,
  *   这里【不要】直接写 speed_1 / speed_2, 否则屏幕上 L/R 会和真实轮子对不上。 */
@@ -64,6 +78,8 @@ static void show_status(void)
         return;
     }
     last = now;
+
+    s_loop_cnt++;
 
     /* 第 1 行: E = 偏差(-100 线在最左 ~ +100 线在最右), S = 差速量(mm/s) */
     OLED_ShowString(0, 0, (u8 *)"E", 12);
@@ -125,6 +141,9 @@ static void show_status(void)
         OLED_ShowString(0, 48, (u8 *)"STOP  K2=GO", 12);
     }
 
+    /* 状态行右边的空位: 心跳计数。★ 它定住不动 = 主循环已经不转了 */
+    OLED_ShowNum(72, 48, (u32)(s_loop_cnt % 10000U), 4, 12);
+
     OLED_Refresh();
 }
 
@@ -176,6 +195,29 @@ void key_encoder_INST_IRQHandler(void)
     motor_pid_update(2);
 }
 
+/* CPU 跑飞(HardFault)。★ 名字由启动文件的弱定义引用, 不要改名。
+ * ★★ 屏幕上出现 !! FAULT !! 就是这里进来的 —— 和"卡死"是两回事, 要分开看 */
+void HardFault_Handler(void)
+{
+    if (s_oled_ready != 0U)
+    {
+        OLED_Clear();
+        OLED_ShowString(0, 0, (u8 *)"!! FAULT !!", 16);
+        OLED_Refresh();
+    }
+
+    while (1)
+    {
+        /* 停在这里让屏幕定格, 方便人看见 */
+    }
+}
+
+/* 不可屏蔽中断(时钟失效之类): 和跑飞同样处理 */
+void NMI_Handler(void)
+{
+    HardFault_Handler();
+}
+
 int main(void)
 {
     uint8_t keynum;
@@ -192,6 +234,7 @@ int main(void)
 
     encoder_init();
     OLED_Init();
+    s_oled_ready = 1U;      /* 从这里起, 故障处理函数可以往屏幕上写字了 */
     tick_init();
 
     OLED_Clear();           /* 清屏只做一次, 放循环里会闪 */
@@ -206,6 +249,19 @@ int main(void)
     if (s_mpu != 0U)
     {
         mpu6050_init();
+    }
+
+    /* ---------- 开机屏: 一直显示到按任意键 ----------
+     * ★★ 跑着跑着又看见这个屏 = MCU 复位过(不是卡死)。这就是要的证据。
+     *    屏幕会【停在这里不动】, 不会自己消失, 所以跑不掉 ★★ */
+    OLED_ShowString(0, 0, (u8 *)"BOOT", 16);
+    OLED_ShowString(0, 24, (u8 *)"press any key", 12);
+    OLED_ShowString(0, 40, (u8 *)"K1=TEST K2=GO", 12);
+    OLED_Refresh();
+
+    while (key_getnum() == 0U)
+    {
+        /* 等按键 */
     }
 
     /* ★ 10ms 分频只在这一处做 */

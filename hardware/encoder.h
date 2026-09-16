@@ -11,11 +11,12 @@
     //测速参数
     编码器线数13线
     电机减速比1:20
-    一圈260个脉冲
+    ★ 一圈 520 个脉冲: 13线 x 20 = 260 个【上升沿】, 双边沿(A 的上升 + 下降)数就是 520。
+      SysConfig 里 E1A/E2A 的中断极性是 RISE_FALL(双边沿), 改回 RISE 的话这里也要改回 260。
 */
 
 #define PI                      3.14
-#define ENCODER_PULSE           260
+#define ENCODER_PULSE           520  // 每圈脉冲数(双边沿); 单边沿是 260
 #define ENCODER_WHEEL_D         48   //mm
 
 #include "ti_msp_dl_config.h"

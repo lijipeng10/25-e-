@@ -149,7 +149,9 @@ static void show_status(void)
  * ★ 名字 GROUP1_IRQHandler 由启动文件引用, 不要改名。
  * ★★ 两个端口都要读: E1A = PB20(GPIOB), E2A = PA25(GPIOA), 不是同一个端口。
  *    只读一个端口的后果: (1) 另一路脉冲数永远不涨, 那一路的速度环拿不到反馈;
- *    (2) 它的中断标志没人清, 电平还在 -> 中断反复重进 -> 程序卡死。 */
+ *    (2) 它的中断标志没人清, 电平还在 -> 中断反复重进 -> 程序卡死。
+ * ★ 现在是【双边沿】计数(A 的上升沿 + 下降沿都进中断), 每圈脉冲数是单边沿的两倍,
+ *   对应 encoder.h 的 ENCODER_PULSE = 520。极性改回 RISE 就要把那个数改回 260。 */
 void GROUP1_IRQHandler(void)
 {
     switch (DL_GPIO_getPendingInterrupt(GPIOA))

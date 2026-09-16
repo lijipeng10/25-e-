@@ -23,14 +23,17 @@
 /* ---------- 可调参数: 全部在这里, 就 5 个 ---------- */
 
 #define LF_LINE_LEVEL   1U      /* 灰度读到这个值算"压线"; 压线时反而是 0 就改成 0U */
-#define LF_BASE_SPEED   300     /* 直行基础速度 mm/s */
+#define LF_BASE_SPEED   220     /* 直行基础速度 mm/s(线偏出去时还会更低, 见 LF_SLOW_KP)。
+                                 * ★ 原来是 300, 实测摆尾, 降下来先求稳 */
 #define LF_STEER_KP     3       /* 每 1 格误差给多少差速 mm/s; error 最大 ±100 */
 #define LF_STEER_MAX    300     /* 差速上限 mm/s; 等于 BASE 时慢轮正好能降到 0 */
+#define LF_SLOW_KP      1       /* ★ 转弯减速: |error| 每 1 格, 基础速度降多少 mm/s */
+#define LF_BASE_MIN     120     /* ★ 基础速度下限 —— 弯道再慢也不能停(停了就转不动了) */
 #define LF_STEER_SIGN   (+1)    /* ★★ 唯一的方向开关: 实测"越偏越远"就改成 -1 ★★ */
 #define LF_STEP_MS      10U     /* line_follow_step() 的调用周期(ms) */
 #define LF_LOST_MS      200U    /* ★ 连续看不到线多久才算【真】丢线(去抖) —— 见 step() 里的长注释 */
 
-/* 单轮命令上限: 基础 + 满差速, 快轮最多这么快 */
+/* 单轮命令上限: 基础 + 满差速, 快轮最多这么快(基础速度已经被 LF_BASE_MIN 限住, 这里不会超) */
 #define LF_CMD_MAX      (LF_BASE_SPEED + LF_STEER_MAX)
 
 /* ★ LF_LEFT_ID / LF_RIGHT_ID(哪个通道是物理左轮)定义在 line_follow.h 里 ——
@@ -177,6 +180,7 @@ uint8_t line_follow_is_lost(void)
 void line_follow_step(void)
 {
     int32_t steer = 0;
+    int32_t base;
     int16_t e_abs = 0;
     int16_t raw_err;
     uint8_t seen;
@@ -200,6 +204,8 @@ void line_follow_step(void)
         s_lost_ms += LF_STEP_MS;
     }
 
+    e_abs = (s_error < 0) ? -s_error : s_error;
+
     /* ★ 第 2 步: 算差速和两个轮子的命令 —— 也是不管跑不跑都算, 屏幕要显示。
      *   error > 0 = 线在右边 -> 要往右转 -> 左轮加速、右轮减速 */
     steer = (int32_t)LF_STEER_KP * (int32_t)s_error * LF_STEER_SIGN;
@@ -214,9 +220,19 @@ void line_follow_step(void)
         steer = -(int32_t)LF_STEER_MAX;
     }
 
+    /* ★ 转弯减速: 线偏得越多, 基础速度压得越低。两个好处:
+     *   (1) 弯道转得过来 —— 同样大小的差速, 速度越慢转弯半径越小;
+     *   (2) 直道上开始摆的时候速度会自动降下来, 给修正留时间, 不容易越摆越大 */
+    base = (int32_t)LF_BASE_SPEED - (int32_t)LF_SLOW_KP * (int32_t)e_abs;
+
+    if (base < (int32_t)LF_BASE_MIN)
+    {
+        base = (int32_t)LF_BASE_MIN;
+    }
+
     s_steer     = (int16_t)steer;
-    s_cmd_left  = (int16_t)(LF_BASE_SPEED + steer);
-    s_cmd_right = (int16_t)(LF_BASE_SPEED - steer);
+    s_cmd_left  = (int16_t)(base + steer);
+    s_cmd_right = (int16_t)(base - steer);
 
     /* 没在循迹: 上面算完够屏幕用了, 电机一下都不碰 */
     if (s_running == 0U)
@@ -249,8 +265,6 @@ void line_follow_step(void)
     {
         s_run_ms += LF_STEP_MS;
     }
-
-    e_abs = (s_error < 0) ? -s_error : s_error;
 
     if (e_abs > (int16_t)s_e_max_abs)
     {

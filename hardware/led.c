@@ -6,6 +6,7 @@
  * 注: SysConfig 里实例名是 "led", LED1/LED2 共用 led_PORT, 所以宏是
  *     led_PORT / led_LED1_PIN / led_LED2_PIN。
  */
+
 /* id 的含义(SysConfig 里实例名 led 的三个引脚):
  *     0 = LED0 = PB21
  *     1 = LED1 = PB2

@@ -5,9 +5,10 @@
 #define motor_KP        0.5f
 #define motor_KI        0.0f
 #define motor_KD        0.0f
-#define motor_DUTY_MAX  20.0f   /* ★★ 我们的 motor_set_duty 是 0~100 百分比。
-                                   上限取 20 = 和以前的开环基础速度一致。
-                                   千万别写 4000(那是参考项目的量程) */
+/* motor_set_duty 传的是【定时器比较值】, 定时器 period = 1000
+ * (见 Debug/ti_msp_dl_config.c 的 gmotor_pwmConfig)
+ * 所以 1000 = 100% 占空比, 200 = 20% */
+#define motor_DUTY_MAX  1000.0f
 
 static PidInc s_pid[2];
 static float  s_target[2];
@@ -85,7 +86,9 @@ void motor_set_duty(uint8_t id, uint16_t duty)
 void motor_pid_init(void)
 {
     uint8_t i;
-    for (i = 0; i < 2U; i++) {
+
+    for (i = 0; i < 2U; i++)
+    {
         pid_init(&s_pid[i], motor_KP, motor_KI, motor_KD, 0.0f, motor_DUTY_MAX);
         s_target[i] = 0.0f;
     }
@@ -93,9 +96,15 @@ void motor_pid_init(void)
 
 void motor_pid_set(uint8_t id, float target_mm_s)
 {
-    if ((id < 1U) || (id > 2U)) { return; }
+    if ((id < 1U) || (id > 2U))
+    {
+        return;
+    }
+
     s_target[id - 1U] = target_mm_s;
-    if (target_mm_s == 0.0f) {
+
+    if (target_mm_s == 0.0f)
+    {
         pid_reset(&s_pid[id - 1U]);
         motor_set_duty(id, 0U);
     }
@@ -107,12 +116,19 @@ void motor_pid_update(uint8_t id)
     float   now, out;
     uint8_t idx;
 
-    if ((id < 1U) || (id > 2U)) { return; }
+    if ((id < 1U) || (id > 2U))
+    {
+        return;
+    }
+
     idx = (uint8_t)(id - 1U);
 
-    if (s_target[idx] == 0.0f) { return; }      /* 目标为 0 就不动它(set 里已经给过 0) */
+    if (s_target[idx] == 0.0f)
+    {
+        return;                                 /* 目标为 0 就不动它(set 里已经给过 0) */
+    }
 
-    now = (float)motor_speed_get(id);           /* 实测 mm/s */
+    now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s, 来自 encoder.c */
     out = pid_update(&s_pid[idx], s_target[idx] - now);
 
     motor_set_duty(id, (uint16_t)out);

@@ -1,7 +1,7 @@
 #include "key.h"
 
 extern int status;
-uint8_t Key_Num = 0; //键码
+uint8_t Key_Num = 0;    /* 键码 */
 
 void key_init(void)
 {
@@ -26,45 +26,48 @@ void key_init(void)
 
 uint8_t key_getnum(void)
 {
-	uint8_t Temp;
-	if (Key_Num)
-	{
-		Temp = Key_Num;
-		Key_Num = 0;
-		return Temp;
-	}
-	return 0;
+    uint8_t Temp;
+
+    if (Key_Num)
+    {
+        Temp = Key_Num;
+        Key_Num = 0;
+        return Temp;
+    }
+
+    return 0;
 }
 
 uint8_t key_get_state(void)
 {
-    if(DL_GPIO_readPins(key_KEY1_PORT, key_KEY1_PIN) == 0)
+    if (DL_GPIO_readPins(key_KEY1_PORT, key_KEY1_PIN) == 0)
     {
         return 1;
     }
-    else if(DL_GPIO_readPins(key_KEY2_PORT, key_KEY2_PIN) == 0)
+    else if (DL_GPIO_readPins(key_KEY2_PORT, key_KEY2_PIN) == 0)
     {
         return 2;
     }
+
     return 0;
 }
 
 void key_tick(void)
 {
-	static uint8_t Count;
-	static uint8_t CurrState, PrevState;
+    static uint8_t Count;
+    static uint8_t CurrState, PrevState;
 
-	Count ++;
-	if (Count >= 1)
-	{
-		Count = 0;
+    Count++;
+    if (Count >= 1)
+    {
+        Count = 0;
 
-		PrevState = CurrState;
-		CurrState = key_get_state();
+        PrevState = CurrState;
+        CurrState = key_get_state();
 
-		if (CurrState == 0 && PrevState != 0)
-		{
-			Key_Num = PrevState;
-		}
-	}
+        if (CurrState == 0 && PrevState != 0)
+        {
+            Key_Num = PrevState;
+        }
+    }
 }

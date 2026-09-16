@@ -23,5 +23,13 @@
 void encoder_init(void);
 void encoder_get_speed(uint8_t id);
 
+/* 原始脉冲计数, 由 GROUP1 中断累加(中断处理在 empty.c 里) */
+extern uint32_t encoder_1_A;
+extern uint32_t encoder_2_A;
+
+/* 实测速度 mm/s, 由 encoder_get_speed() 每 50ms 刷新 */
+extern float speed_1;
+extern float speed_2;
+
 
 #endif /* ENCODER_H */

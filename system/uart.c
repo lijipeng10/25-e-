@@ -60,21 +60,28 @@ void uart_init(void)
 void uart_send_byte(uint8_t ch)
 {
     /* 等 UART 不忙, 防止 FIFO 溢出/丢字节 */
-    while (DL_UART_isBusy(smotor_vision_INST) != false) { }
+    while (DL_UART_isBusy(smotor_vision_INST) != false)
+    {
+        /* 空转 */
+    }
+
     DL_UART_transmitData(smotor_vision_INST, ch);
 }
 
 void uart_send_bytes(const uint8_t *buf, uint16_t len)
 {
     uint16_t i;
-    for (i = 0U; i < len; i++) {
+
+    for (i = 0U; i < len; i++)
+    {
         uart_send_byte(buf[i]);
     }
 }
 
 void uart_send_str(const char *s)
 {
-    while (*s != '\0') {
+    while (*s != '\0')
+    {
         uart_send_byte((uint8_t)*s);
         s++;
     }
@@ -87,19 +94,28 @@ uint16_t uart_available(void)
 {
     uint16_t n;
     uint32_t primask = __get_PRIMASK();
+
     __disable_irq();
     n = uart_ring_count(s_rx_head, s_rx_tail, RX_BUF_SIZE);
-    if (primask == 0U) __enable_irq();
+
+    if (primask == 0U)
+    {
+        __enable_irq();
+    }
+
     return n;
 }
 
 int uart_read_byte(uint8_t *ch)
 {
-    if (s_rx_tail == s_rx_head) {     /* 空 */
+    if (s_rx_tail == s_rx_head)       /* 空 */
+    {
         return 0;
     }
+
     *ch = s_rxbuf[s_rx_tail];
     s_rx_tail = (uint16_t)((s_rx_tail + 1U) & (RX_BUF_SIZE - 1U));
+
     return 1;
 }
 
@@ -111,24 +127,40 @@ int uart_get_line(char *line, uint16_t maxlen)
     uint8_t ch;
     uint16_t i;
 
-    while (uart_read_byte(&ch) != 0) {
-        if (ch == '\n') {
-            if (s_len > 0U && s_line[s_len - 1U] == '\r') {
+    while (uart_read_byte(&ch) != 0)
+    {
+        if (ch == '\n')
+        {
+            if (s_len > 0U && s_line[s_len - 1U] == '\r')
+            {
                 s_len--;
             }
-            if (maxlen == 0U) { s_len = 0U; return 1; }
-            for (i = 0U; (i < s_len) && (i < (maxlen - 1U)); i++) {
+
+            if (maxlen == 0U)
+            {
+                s_len = 0U;
+                return 1;
+            }
+
+            for (i = 0U; (i < s_len) && (i < (maxlen - 1U)); i++)
+            {
                 line[i] = s_line[i];
             }
+
             line[i] = '\0';
             s_len = 0U;
+
             return 1;
-        } else if ((ch >= ' ') && (ch < 127)) {   /* 只保存可见字符 */
-            if (s_len < (sizeof(s_line) - 1U)) {
+        }
+        else if ((ch >= ' ') && (ch < 127))   /* 只保存可见字符 */
+        {
+            if (s_len < (sizeof(s_line) - 1U))
+            {
                 s_line[s_len++] = (char)ch;
             }
         }
     }
+
     return 0;
 }
 
@@ -150,7 +182,9 @@ void smotor_vision_INST_IRQHandler(void)
         {
             uint8_t ch = DL_UART_receiveData(smotor_vision_INST);
             uint16_t next = (uint16_t)((s_rx_head + 1U) & (RX_BUF_SIZE - 1U));
-            if (next != s_rx_tail) {         /* 没满才存 */
+
+            if (next != s_rx_tail)         /* 没满才存 */
+            {
                 s_rxbuf[s_rx_head] = ch;
                 s_rx_head = next;
                 s_rx_total++;

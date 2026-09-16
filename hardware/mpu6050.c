@@ -19,6 +19,7 @@
  *   很多 MPU6050 模块的 AD0 是悬空/拉高的, 地址其实是 0x69,
  *   只试 0x68 会把"接得好好的传感器"误判成没接。 */
 static uint8_t s_addr = MPU_ADDR;
+
 #define MPU_REG_CONFIG    0x1A
 #define MPU_REG_GYROCFG   0x1B
 #define MPU_REG_GYRO_Z    0x47
@@ -46,18 +47,36 @@ static int i2c_write_reg(uint8_t reg, uint8_t val)
     uint8_t buf[2];
     uint32_t guard = 200000U;
 
-    buf[0] = reg; buf[1] = val;
-    while (!(DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_IDLE)) {
-        if (--guard == 0U) return -1;
+    buf[0] = reg;
+    buf[1] = val;
+
+    while (!(DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_IDLE))
+    {
+        if (--guard == 0U)
+        {
+            return -1;
+        }
     }
+
     DL_I2C_fillControllerTXFIFO(MPU6050_INST, buf, 2U);
     DL_I2C_startControllerTransfer(MPU6050_INST, s_addr,
                                    DL_I2C_CONTROLLER_DIRECTION_TX, 2U);
+
     guard = 200000U;
-    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY) {
-        if (--guard == 0U) return -1;
+
+    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY)
+    {
+        if (--guard == 0U)
+        {
+            return -1;
+        }
     }
-    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR) return -1;
+
+    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR)
+    {
+        return -1;
+    }
+
     return 0;
 }
 
@@ -68,8 +87,13 @@ static int i2c_read_reg(uint8_t reg, uint8_t *buf, uint16_t len)
     uint32_t guard;
 
     guard = 200000U;
-    while (!(DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_IDLE)) {
-        if (--guard == 0U) return -1;
+
+    while (!(DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_IDLE))
+    {
+        if (--guard == 0U)
+        {
+            return -1;
+        }
     }
 
     /* 阶段1: 寄存器地址, START 但不停 */
@@ -78,29 +102,58 @@ static int i2c_read_reg(uint8_t reg, uint8_t *buf, uint16_t len)
         DL_I2C_CONTROLLER_DIRECTION_TX, 1U,
         DL_I2C_CONTROLLER_START_ENABLE, DL_I2C_CONTROLLER_STOP_DISABLE,
         DL_I2C_CONTROLLER_ACK_DISABLE);
+
     guard = 200000U;
-    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY) {
-        if (--guard == 0U) return -1;
+
+    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY)
+    {
+        if (--guard == 0U)
+        {
+            return -1;
+        }
     }
-    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR) return -1;
+
+    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR)
+    {
+        return -1;
+    }
 
     /* 阶段2: 重复起始 + 读 len 字节 + STOP */
     DL_I2C_startControllerTransferAdvanced(MPU6050_INST, s_addr,
         DL_I2C_CONTROLLER_DIRECTION_RX, len,
         DL_I2C_CONTROLLER_START_ENABLE, DL_I2C_CONTROLLER_STOP_ENABLE,
         DL_I2C_CONTROLLER_ACK_DISABLE);
-    for (i = 0U; i < len; i++) {
+
+    for (i = 0U; i < len; i++)
+    {
         guard = 200000U;
-        while (DL_I2C_isControllerRXFIFOEmpty(MPU6050_INST)) {
-            if (--guard == 0U) return -1;
+
+        while (DL_I2C_isControllerRXFIFOEmpty(MPU6050_INST))
+        {
+            if (--guard == 0U)
+            {
+                return -1;
+            }
         }
+
         buf[i] = DL_I2C_receiveControllerData(MPU6050_INST);
     }
+
     guard = 200000U;
-    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY) {
-        if (--guard == 0U) return -1;
+
+    while (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_BUSY)
+    {
+        if (--guard == 0U)
+        {
+            return -1;
+        }
     }
-    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR) return -1;
+
+    if (DL_I2C_getControllerStatus(MPU6050_INST) & DL_I2C_CONTROLLER_STATUS_ERROR)
+    {
+        return -1;
+    }
+
     return 0;
 }
 
@@ -124,14 +177,21 @@ void mpu6050_init(void)
     delay_ms(10);
 
     /* 零偏标定: 要求此时静止 */
-    for (i = 0; i < 200; i++) {
-        if (i2c_read_reg(MPU_REG_GYRO_Z, b, 2U) == 0) {
+    for (i = 0; i < 200; i++)
+    {
+        if (i2c_read_reg(MPU_REG_GYRO_Z, b, 2U) == 0)
+        {
             acc += (int32_t)(int16_t)(((uint16_t)b[0] << 8) | b[1]);
             n++;
         }
+
         delay_ms(2);
     }
-    if (n > 0) s_gyro_bias = (float)acc / (float)n;
+
+    if (n > 0)
+    {
+        s_gyro_bias = (float)acc / (float)n;
+    }
 }
 
 void mpu6050_update(void)
@@ -141,7 +201,10 @@ void mpu6050_update(void)
     int16_t raw;
     float dps;
 
-    if (i2c_read_reg(MPU_REG_GYRO_Z, b, 2U) != 0) return;
+    if (i2c_read_reg(MPU_REG_GYRO_Z, b, 2U) != 0)
+    {
+        return;
+    }
 
     raw = (int16_t)(((uint16_t)b[0] << 8) | b[1]);
     dps = ((float)raw - s_gyro_bias) / GYRO_LSB_PER_DPS;   /* 度/秒 */
@@ -150,17 +213,33 @@ void mpu6050_update(void)
     s_rate_x10 = (int16_t)(dps * 10.0f);
 
     now = tick_get_ms();
-    if (s_last_ms == 0U) { s_last_ms = now; return; }
+
+    if (s_last_ms == 0U)
+    {
+        s_last_ms = now;
+        return;
+    }
 
     dt = now - s_last_ms;
     s_last_ms = now;
-    if (dt > 100U) dt = 100U;                        /* 防卡顿造成大跳变 */
+
+    if (dt > 100U)
+    {
+        dt = 100U;                                  /* 防卡顿造成大跳变 */
+    }
 
     /* 0.1° += (度/秒) * (ms/1000) * 10 = 度/秒 * ms / 100 */
     s_yaw_x10 += (int32_t)(dps * (float)dt / 100.0f);
 
-    while (s_yaw_x10 >  1800) s_yaw_x10 -= 3600;
-    while (s_yaw_x10 < -1800) s_yaw_x10 += 3600;
+    while (s_yaw_x10 > 1800)
+    {
+        s_yaw_x10 -= 3600;
+    }
+
+    while (s_yaw_x10 < -1800)
+    {
+        s_yaw_x10 += 3600;
+    }
 }
 
 int32_t mpu6050_get_yaw_x10(void)
@@ -198,11 +277,15 @@ uint8_t mpu6050_ping(void)
     /* ★ 两个地址都试一遍: 0x68(AD0=0) 和 0x69(AD0=1)。
      *   很多模块的 AD0 悬空或拉高, 实际地址就是 0x69 ——
      *   只试 0x68 会把接得好好的传感器误判成"没接"。 */
-    for (a = MPU_ADDR; a <= MPU_ADDR_ALT; a++) {
+    for (a = MPU_ADDR; a <= MPU_ADDR_ALT; a++)
+    {
         s_addr = a;
-        if (i2c_read_reg(MPU_REG_WHOAMI, &b, 1U) == 0) {
+
+        if (i2c_read_reg(MPU_REG_WHOAMI, &b, 1U) == 0)
+        {
             /* 应答了(有 ACK), 而且不是全 0/全 1(排除总线悬空) */
-            if ((b != 0x00U) && (b != 0xFFU)) {
+            if ((b != 0x00U) && (b != 0xFFU))
+            {
                 return a;               /* 就用这个地址 */
             }
         }

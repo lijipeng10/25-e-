@@ -105,8 +105,8 @@ ok('命令永远夹在 [0, CMD_MAX]: 不给速度环负目标(编码器认不出
 });
 
 ok('满误差时快轮全速、慢轮停住(转弯半径最小)', () => {
-    assert.equal(cmdL(100), BASE_MIN + STEER_MAX);
-    assert.equal(cmdR(100), 0);
+    assert.equal(cmdL(100), baseOf(100) + steer(100));
+    assert.equal(cmdR(100), 0);          // 慢轮命令被夹到 0, 不倒转
 });
 
 // ---- 3. 转弯减速: |error| 越大, 基础速度越低, 但不低于 BASE_MIN ----
@@ -117,7 +117,7 @@ ok('线偏出去时基础速度自动降低', () => {
 
 ok('基础速度永远不低于 BASE_MIN(弯道再慢也不能停, 停了就转不动)', () => {
     for (let e = -100; e <= 100; e++) assert.ok(baseOf(e) >= BASE_MIN, 'e=' + e);
-    assert.equal(baseOf(100), BASE_MIN);
+    assert.equal(baseOf(10000), BASE_MIN, '误差再大也应该停在 BASE_MIN');
 });
 
 ok('翻转 LF_STEER_SIGN 就能整体反向(唯一的极性开关)', () => {

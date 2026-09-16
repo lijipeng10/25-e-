@@ -29,11 +29,13 @@
 /* ---------- 可调参数: 全部在这里, 就 5 个 ---------- */
 
 #define LF_LINE_LEVEL   1U      /* 灰度读到这个值算"压线"; 压线时反而是 0 就改成 0U */
-#define LF_BASE_SPEED   220     /* 直行基础速度 mm/s(线偏出去时还会更低, 见 LF_SLOW_KP)。
-                                 * ★ 原来是 300, 实测摆尾, 降下来先求稳 */
+#define LF_BASE_SPEED   440     /* 直行基础速度 mm/s(线偏出去时还会更低, 见 LF_SLOW_KP)。
+                                 * ★ 调参史: 300 会摆尾 -> 220 稳住(|E|最大只有14) -> 440 提速。
+                                 * ★ 提速后如果 L/R 追不上 l/r, 说明占空比饱和了, 降回来 */
 #define LF_STEER_KP     3       /* 每 1 格误差给多少差速 mm/s; error 最大 ±100 */
 #define LF_STEER_MAX    300     /* 差速上限 mm/s; 等于 BASE 时慢轮正好能降到 0 */
-#define LF_SLOW_KP      1       /* ★ 转弯减速: |error| 每 1 格, 基础速度降多少 mm/s */
+#define LF_SLOW_KP      2       /* ★ 转弯减速: |error| 每 1 格, 基础速度降多少 mm/s。
+                                 *   基础速度翻倍了, 这里也翻倍, 保持原来的刹车力度 */
 #define LF_GYRO_KD      2       /* ★★ 陀螺仪阻尼: 单位 mm/s 每 (度/秒)。0 = 关掉,
                                  *    摆得更凶就改成负数(说明陀螺仪左右符号反了) */
 #define LF_BASE_MIN     120     /* ★ 基础速度下限 —— 弯道再慢也不能停(停了就转不动了) */

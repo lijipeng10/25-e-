@@ -35,16 +35,28 @@ void encoder_get_speed(uint8_t id)
     }
 }
 
-/* 编码器脉冲计数中断(GPIOB, 共享 IRQ 1)。
-   原来写在 empty.c 里 —— 它就是数脉冲的, 本来就该待在 encoder.c。
-   ★ 名字 GROUP1_IRQHandler 由 SysConfig 的启动文件引用, 不要改名。 */
+/* 编码器脉冲计数中断。GPIOA 和 GPIOB 共用 IRQ 1, 所以一个函数管两路。
+   ★ 名字 GROUP1_IRQHandler 由 SysConfig 的启动文件引用, 不要改名。
+   ★★ 两个端口【都要读】: E1A=PB20 在 GPIOB, E2A=PA25 在 GPIOA, 不是同一个端口。
+      只读一个端口有两个后果:
+      (1) 另一路的脉冲数永远不涨 -> 那一路的速度环拿不到反馈;
+      (2) 那一路的中断标志没人清 -> 电平还在, 中断反复重进, 程序直接卡死。 */
 void GROUP1_IRQHandler(void)
 {
+    switch (DL_GPIO_getPendingInterrupt(GPIOA))
+    {
+        case encoder_E2A_IIDX:
+            encoder_2_A++;
+            break;
+
+        default:
+            break;
+    }
+
     switch (DL_GPIO_getPendingInterrupt(GPIOB))
     {
         case encoder_E1A_IIDX:
             encoder_1_A++;
-            encoder_2_A++;
             break;
 
         default:

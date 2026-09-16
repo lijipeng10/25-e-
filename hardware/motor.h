@@ -21,6 +21,11 @@ void motor_pid_init(void);
 void motor_pid_set(uint8_t id, float target_mm_s);
 void motor_pid_update(uint8_t id);
 
+/* 编码器故障: 1 = 速度环顶死却测不到转速, 两个轮子已被强制停住并自锁。
+   ★ 自锁要显式 motor_fault_clear() 才解 —— 不然 PID 会一直重试, 车反复冲 */
+uint8_t motor_is_fault(void);
+void    motor_fault_clear(void);
+
 /* KEY1 阶梯加速测速: 内部把档位加一档(到头回 0), 给两个轮子设方向和目标速度。
  * ★ 档位表和下标都是 motor.c 里的 static, 外面看不见, 只能读 motor_test_duty() */
 void     motor_test_step(void);

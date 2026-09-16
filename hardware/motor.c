@@ -10,8 +10,15 @@
 
 #define motor_DUTY_MAX  900.0f
 
+/* ★ 编码器故障保护: 连续 10 拍(= 10 x 50ms = 0.5s)
+   "占空比顶到上限、编码器却一个脉冲都没有" 就判故障停车。
+   不拦的话 PID 会把占空比一直顶在最大, 车直接冲出去(实测踩过: "一给速度就全速")。 */
+#define motor_FAULT_TICKS   10U
+
 static PidInc s_pid[2];         /* 两个轮子各自的 PID 状态 */
 static float  s_target[2];      /* 两个轮子各自的目标速度 (mm/s) */
+static uint8_t s_fault_cnt[2];  /* 每个轮子连续"顶死却不动"的拍数 */
+static uint8_t s_fault;         /* 1 = 已判故障, 自锁 —— 要 motor_fault_clear() 才解 */
 
 void motor_init(void)
 {
@@ -34,15 +41,15 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     // 设置电机方向
     if(id == 1)
     {
-        if(direction == 1) // 正转
-        {
-            DL_GPIO_clearPins(motor_AIN1_PORT, motor_AIN1_PIN);
-            DL_GPIO_setPins(motor_AIN2_PORT, motor_AIN2_PIN);
-        }
-        else if(direction == 2) // 反转
+        if(direction == 1) // 正转(车往前走) —— 实测原来这两行写反了, 已对调
         {
             DL_GPIO_setPins(motor_AIN1_PORT, motor_AIN1_PIN);
             DL_GPIO_clearPins(motor_AIN2_PORT, motor_AIN2_PIN);
+        }
+        else if(direction == 2) // 反转
+        {
+            DL_GPIO_clearPins(motor_AIN1_PORT, motor_AIN1_PIN);
+            DL_GPIO_setPins(motor_AIN2_PORT, motor_AIN2_PIN);
         }
         else // 停止
         {
@@ -52,15 +59,15 @@ void motor_set_direction(uint8_t id, uint8_t direction)
     }
     else if(id == 2)
     {
-        if(direction == 1) // 正转
-        {
-            DL_GPIO_setPins(motor_BIN1_PORT, motor_BIN1_PIN);
-            DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
-        }
-        else if(direction == 2) // 反转
+        if(direction == 1) // 正转(车往前走) —— 实测原来这两行写反了, 已对调
         {
             DL_GPIO_clearPins(motor_BIN1_PORT, motor_BIN1_PIN);
             DL_GPIO_setPins(motor_BIN2_PORT, motor_BIN2_PIN);
+        }
+        else if(direction == 2) // 反转
+        {
+            DL_GPIO_setPins(motor_BIN1_PORT, motor_BIN1_PIN);
+            DL_GPIO_clearPins(motor_BIN2_PORT, motor_BIN2_PIN);
         }
         else // 停止
         {
@@ -91,7 +98,10 @@ void motor_pid_init(void)
     {
         pid_init(&s_pid[i], motor_KP, motor_KI, motor_KD, 0.0f, motor_DUTY_MAX);
         s_target[i] = 0.0f;
+        s_fault_cnt[i] = 0U;
     }
+
+    s_fault = 0U;
 }
 
 void motor_pid_set(uint8_t id, float target_mm_s)
@@ -110,6 +120,22 @@ void motor_pid_set(uint8_t id, float target_mm_s)
     }
 }
 
+/* 两个轮子立刻全停 + 置故障标志。★ 在定时器中断里被调用, 只做寄存器操作, 不带延时 */
+static void motor_stop_all(void)
+{
+    s_target[0] = 0.0f;
+    s_target[1] = 0.0f;
+    pid_reset(&s_pid[0]);
+    pid_reset(&s_pid[1]);
+    s_fault_cnt[0] = 0U;
+    s_fault_cnt[1] = 0U;
+    motor_set_direction(1U, 0U);
+    motor_set_direction(2U, 0U);
+    motor_set_duty(1U, 0U);
+    motor_set_duty(2U, 0U);
+    s_fault = 1U;
+}
+
 /* 每 50ms 调一次, id = 1 或 2, 两个电机各自独立 */
 void motor_pid_update(uint8_t id)
 {
@@ -123,6 +149,11 @@ void motor_pid_update(uint8_t id)
 
     idx = (uint8_t)(id - 1U);
 
+    if (s_fault != 0U)
+    {
+        return;                                 /* 故障自锁: 不 clear 谁也别想再转 */
+    }
+
     if (s_target[idx] == 0.0f)
     {
         return;                                 /* 目标为 0 就不动它(set 里已经给过 0) */
@@ -131,7 +162,35 @@ void motor_pid_update(uint8_t id)
     now = (idx == 0U) ? speed_1 : speed_2;      /* 实测 mm/s, 来自 encoder.c */
     out = pid_update(&s_pid[idx], s_target[idx] - now);
 
+    /* ★ 编码器故障判据: 占空比已经顶到上限, 轮子却一个脉冲都没有 */
+    if ((out >= (motor_DUTY_MAX - 1.0f)) && (now < 1.0f))
+    {
+        s_fault_cnt[idx]++;
+
+        if (s_fault_cnt[idx] >= motor_FAULT_TICKS)
+        {
+            motor_stop_all();
+            return;
+        }
+    }
+    else
+    {
+        s_fault_cnt[idx] = 0U;
+    }
+
     motor_set_duty(id, (uint16_t)out);
+}
+
+uint8_t motor_is_fault(void)
+{
+    return s_fault;
+}
+
+void motor_fault_clear(void)
+{
+    s_fault = 0U;
+    s_fault_cnt[0] = 0U;
+    s_fault_cnt[1] = 0U;
 }
 
 /* ---------------------------------------------------------------------------
